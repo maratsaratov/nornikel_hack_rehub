@@ -4,6 +4,7 @@ import { Toast } from './components/ui.jsx'
 import KnowledgePanel from './components/KnowledgePanel.jsx'
 import ProjectModal from './components/ProjectModal.jsx'
 import GenerationPanel from './components/GenerationPanel.jsx'
+import TargetPanel from './components/TargetPanel.jsx'
 
 function Icon({ name }) {
   const common = {
@@ -120,6 +121,14 @@ export default function App() {
     flash('Проект создан')
   }
 
+  async function saveTarget(payload) {
+    if (!project) return null
+    const p = await api.updateProject(project.id, { ...project, ...payload })
+    setProjects((prev) => prev.map((x) => (x.id === p.id ? p : x)))
+    flash('Целевой показатель сохранён')
+    return p
+  }
+
   async function addSource(data) {
     await api.addSource(currentId, data)
     await reloadKnowledge()
@@ -223,10 +232,7 @@ export default function App() {
               />
             )}
             {currentRoute === '#target' && (
-              <section className="empty-project">
-                <h1>Целевой показатель</h1>
-                <p>Настройка KPI проекта. (TODO: реализовать компонент TargetPanel)</p>
-              </section>
+              <TargetPanel project={project} onSave={saveTarget} />
             )}
           </>
         ) : (
