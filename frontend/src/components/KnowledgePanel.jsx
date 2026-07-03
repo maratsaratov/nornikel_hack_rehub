@@ -57,6 +57,13 @@ function sourceDescription(item) {
   return previewText(item?.content || item?.abstract || item?.description)
 }
 
+function sourceOriginBadge(item) {
+  const origin = compactText(item?.origin).toLowerCase()
+  if (origin === 'openalex') return 'OpenAlex'
+  if (item?.is_external) return 'External'
+  return ''
+}
+
 function resultKey(item, prefix) {
   return compactText(item?.openalex_id || item?.id || item?.doi || `${prefix}-${displayTitle(item)}-${sourceMeta(item)}`)
 }
@@ -154,6 +161,14 @@ export default function KnowledgePanel({
     setImportingKey(key)
     try {
       await onImportOpenAlex(item)
+      setResults((prev) => ({
+        ...prev,
+        external: prev.external.map((entry) => (
+          resultKey(entry, 'external') === key
+            ? { ...entry, already_added: true }
+            : entry
+        )),
+      }))
     } finally {
       setImportingKey('')
     }
@@ -256,7 +271,14 @@ export default function KnowledgePanel({
                   {results.local.length === 0 && <p className="section-hint">Совпадений в добавленных источниках нет.</p>}
                   {results.local.map((item) => (
                     <div className="search-item" key={resultKey(item, 'local')}>
-                      <div className="search-item-title">{displayTitle(item)}</div>
+                      <div className="search-item-heading">
+                        <div className="search-item-title">{displayTitle(item)}</div>
+                        {sourceOriginBadge(item) && (
+                          <div className="source-badges">
+                            <span className="source-badge source-badge--external">{sourceOriginBadge(item)}</span>
+                          </div>
+                        )}
+                      </div>
                       {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
                       {sourceDescription(item) && <p className="search-item-desc">{sourceDescription(item)}</p>}
                     </div>
@@ -278,13 +300,19 @@ export default function KnowledgePanel({
                       <div className="search-item" key={key}>
                         <div className="search-actions">
                           <div>
-                            <div className="search-item-title">{displayTitle(item)}</div>
+                            <div className="search-item-heading">
+                              <div className="search-item-title">{displayTitle(item)}</div>
+                              <div className="source-badges">
+                                <span className="source-badge source-badge--external">OpenAlex</span>
+                                {item?.already_added && <span className="source-badge source-badge--existing">In project</span>}
+                              </div>
+                            </div>
                             {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
                           </div>
                           <button
                             className="btn secondary btn-compact"
                             onClick={() => importResult(item)}
-                            disabled={importingKey === key}
+                            disabled={importingKey === key || item?.already_added}
                           >
                             {importingKey === key ? 'Импорт...' : 'Импорт'}
                           </button>

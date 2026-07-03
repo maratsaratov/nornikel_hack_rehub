@@ -96,6 +96,7 @@ class KnowledgeSource(db.Model):
             "title": self.title,
             "source_type": self.source_type,
             "origin": self.origin or "manual",
+            "is_external": (self.origin or "manual") != "manual",
             "authors": self.authors,
             "year": self.year,
             "reference": self.reference,

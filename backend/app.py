@@ -21,6 +21,7 @@ from models import (
 from engine import generate_hypotheses
 import llm
 from openalex import search_works
+from ai.providers.base import ProviderUnavailableError
 from ingestion.service import (
     FileTooLargeError,
     IngestionError,
@@ -29,6 +30,7 @@ from ingestion.service import (
     parse_document as parse_ingested_document,
     save_upload,
 )
+from ingestion.services.parser_review import ParserReviewPreconditionError, review_document_parse
 
 
 def _parse_weights(raw):
@@ -445,6 +447,23 @@ def create_app():
         if not document:
             return jsonify({"error": "Document not found"}), 404
         return jsonify(document_preview(document))
+
+    @app.post("/api/documents/<int:did>/review")
+    def review_document_endpoint(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        try:
+            payload = review_document_parse(did)
+        except ProviderUnavailableError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except ParserReviewPreconditionError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify(payload)
 
     @app.delete("/api/documents/<int:did>")
     def delete_document_endpoint(did):

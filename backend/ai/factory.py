@@ -4,6 +4,7 @@ from ai.providers.noop_provider import (
     NoopExtractionProvider,
     NoopLLMProvider,
 )
+from ai.providers.openrouter_provider import OpenRouterExtractionProvider
 
 
 def get_llm_provider():
@@ -22,6 +23,8 @@ def get_embedding_provider():
 
 def get_extraction_provider():
     config = load_ai_config()
+    if config.extraction_provider == "openrouter":
+        return OpenRouterExtractionProvider()
     if config.extraction_provider != "noop":
         raise ValueError(f"AI extraction provider is not implemented: {config.extraction_provider}")
     return NoopExtractionProvider()

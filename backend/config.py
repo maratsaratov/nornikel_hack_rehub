@@ -42,6 +42,12 @@ class Config:
     AI_LLM_PROVIDER = os.getenv("AI_LLM_PROVIDER", AI_DEFAULT_PROVIDER)
     AI_EMBEDDING_PROVIDER = os.getenv("AI_EMBEDDING_PROVIDER", AI_DEFAULT_PROVIDER)
     AI_EXTRACTION_PROVIDER = os.getenv("AI_EXTRACTION_PROVIDER", AI_DEFAULT_PROVIDER)
+    AI_API_KEY = os.getenv("AI_API_KEY", OPENAI_API_KEY)
+    AI_API_BASE = os.getenv("AI_API_BASE", OPENAI_API_BASE)
+    AI_PARSER_REVIEW_MODEL = os.getenv("AI_PARSER_REVIEW_MODEL", "qwen/qwen3-4b-instruct-2507")
+    AI_PARSER_REVIEW_MAX_TOKENS = int(os.getenv("AI_PARSER_REVIEW_MAX_TOKENS", "900"))
+    AI_PARSER_REVIEW_INPUT_CHARS = int(os.getenv("AI_PARSER_REVIEW_INPUT_CHARS", "14000"))
+    AI_PARSER_REVIEW_TEMPERATURE = float(os.getenv("AI_PARSER_REVIEW_TEMPERATURE", "0.0"))
 
     # ── App behaviour ───────────────────────────────────────────────────────
     SEED_DEMO = _bool("SEED_DEMO", True)
