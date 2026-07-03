@@ -27,10 +27,23 @@ export const api = {
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
 
   listSources: (id) => req(`/api/projects/${id}/sources`),
-  searchSources: (id, q, limit = 6) => req(`/api/projects/${id}/sources/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   addSource: (id, b) => req(`/api/projects/${id}/sources`, { method: 'POST', ...body(b) }),
-  importOpenAlexSource: (id, b) => req(`/api/projects/${id}/sources/import-openalex`, { method: 'POST', ...body(b) }),
+  searchSources: (id, q, limit = 6) => (
+    req(`/api/projects/${id}/sources/search?q=${encodeURIComponent(q)}&limit=${limit}`)
+  ),
+  importOpenAlex: (id, b) => req(`/api/projects/${id}/sources/import-openalex`, { method: 'POST', ...body(b) }),
   deleteSource: (id) => req(`/api/sources/${id}`, { method: 'DELETE' }),
+
+  listDocuments: (id) => req(`/api/projects/${id}/documents`),
+  uploadDocument: (id, file, parse = true) => {
+    const form = new FormData()
+    form.append('file', file)
+    return req(`/api/projects/${id}/documents?parse=${parse ? 'true' : 'false'}`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+  deleteDocument: (id) => req(`/api/documents/${id}`, { method: 'DELETE' }),
 
   generate: (id, b) => req(`/api/projects/${id}/generate`, { method: 'POST', ...body(b) }),
   listHypotheses: (id) => req(`/api/projects/${id}/hypotheses`),
