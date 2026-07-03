@@ -25,6 +25,9 @@ const CARD_METRICS = [
 
 const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt']
 const MAX_DOCUMENT_UPLOAD_MB = 25
+const EMPTY_OPENALEX_RESULTS = { query: '', local: [], external: [], external_error: null }
+const MIN_OPENALEX_QUERY_LENGTH = 2
+const OPENALEX_SEARCH_DEBOUNCE_MS = 320
 
 function compactText(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ')
@@ -74,6 +77,53 @@ function sourceAuthor(source) {
 function fileExtension(filename) {
   const parts = String(filename || '').toLowerCase().split('.')
   return parts.length > 1 ? parts.pop() : ''
+}
+
+function openAlexTitle(item) {
+  return compactText(item?.title || item?.display_name) || 'Без названия'
+}
+
+function openAlexResultKey(item, prefix = 'external') {
+  return compactText(
+    item?.openalex_id
+      || item?.external_id
+      || item?.id
+      || item?.doi
+      || `${prefix}-${openAlexTitle(item)}`,
+  )
+}
+
+function openAlexMeta(item) {
+  const authors = Array.isArray(item?.authors)
+    ? item.authors.filter(Boolean).join(', ')
+    : item?.authors
+
+  return [
+    compactText(authors),
+    compactText(item?.year || item?.publication_year || item?.metadata?.year),
+    compactText(item?.reference || item?.doi),
+  ].filter(Boolean).join(' · ')
+}
+
+function openAlexDescription(item) {
+  return clipped(
+    item?.abstract
+      || item?.description
+      || item?.content
+      || item?.excerpt
+      || item?.raw_text_preview,
+    140,
+  )
+}
+
+function buildOpenAlexResults(query, payload = {}) {
+  return {
+    ...EMPTY_OPENALEX_RESULTS,
+    ...payload,
+    query: payload?.query || query,
+    local: payload?.local || [],
+    external: payload?.external || [],
+  }
 }
 
 function makeItems(sources, documents) {
@@ -253,6 +303,9 @@ export default function KnowledgePanel({
   const [query, setQuery] = useState('')
   const [doi, setDoi] = useState('')
   const [doiStatus, setDoiStatus] = useState('')
+  const [openAlexResults, setOpenAlexResults] = useState(EMPTY_OPENALEX_RESULTS)
+  const [searchingOpenAlex, setSearchingOpenAlex] = useState(false)
+  const [importingOpenAlexKey, setImportingOpenAlexKey] = useState('')
   const [uploadStatus, setUploadStatus] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -270,6 +323,7 @@ export default function KnowledgePanel({
   })
   const fileInputRef = useRef(null)
   const selectedOnceRef = useRef(false)
+  const openAlexRequestRef = useRef(0)
   const acceptedDocumentExtensions = useMemo(() => {
     const normalized = (documentTypes || [])
       .map((ext) => String(ext || '').toLowerCase().replace(/^\./, ''))
@@ -309,6 +363,36 @@ export default function KnowledgePanel({
     selectedOnceRef.current = true
     setSelectedIds(new Set([libraryItems[0].id]))
   }, [libraryItems])
+
+  useEffect(() => {
+    const term = doi.trim()
+    if (!term || term.length < MIN_OPENALEX_QUERY_LENGTH || !onSearch) {
+      setSearchingOpenAlex(false)
+      setOpenAlexResults(EMPTY_OPENALEX_RESULTS)
+      return undefined
+    }
+
+    const requestId = openAlexRequestRef.current + 1
+    openAlexRequestRef.current = requestId
+
+    const timerId = window.setTimeout(async () => {
+      setSearchingOpenAlex(true)
+      try {
+        const results = await onSearch(term)
+        if (openAlexRequestRef.current !== requestId) return
+        setOpenAlexResults(buildOpenAlexResults(term, results))
+      } catch (error) {
+        if (openAlexRequestRef.current !== requestId) return
+        setOpenAlexResults(buildOpenAlexResults(term, { external_error: error.message }))
+      } finally {
+        if (openAlexRequestRef.current === requestId) {
+          setSearchingOpenAlex(false)
+        }
+      }
+    }, OPENALEX_SEARCH_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(timerId)
+  }, [doi, onSearch])
 
   const filteredItems = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -362,21 +446,44 @@ export default function KnowledgePanel({
     }
   }
 
+  async function importOpenAlexResult(item) {
+    if (!item || !onImportOpenAlex) return
+    if (item?.already_added) {
+      setDoiStatus('Источник уже есть в библиотеке')
+      return
+    }
+
+    const itemKey = openAlexResultKey(item)
+    setImportingOpenAlexKey(itemKey)
+    setDoiStatus('Добавляем источник...')
+    try {
+      await onImportOpenAlex(item)
+      setDoi('')
+      setOpenAlexResults(EMPTY_OPENALEX_RESULTS)
+      setDoiStatus('Ссылка добавлена')
+    } catch (error) {
+      setDoiStatus(error.message)
+    } finally {
+      setImportingOpenAlexKey('')
+    }
+  }
+
   async function addDoi() {
     const value = doi.trim()
     if (!value || !onSearch || !onImportOpenAlex) return
     setDoiStatus('Ищем источник...')
     try {
       // TODO: заменить поиск OpenAlex прямым backend-резолвером DOI/URL, когда он появится.
-      const results = await onSearch(value)
-      const firstExternal = results.external?.[0]
+      const results = openAlexResults.query === value
+        ? openAlexResults
+        : buildOpenAlexResults(value, await onSearch(value))
+      setOpenAlexResults(results)
+      const firstExternal = results.external?.find((item) => !item?.already_added) || results.external?.[0]
       if (!firstExternal) {
         setDoiStatus(results.external_error || 'Источник не найден')
         return
       }
-      await onImportOpenAlex(firstExternal)
-      setDoi('')
-      setDoiStatus('Ссылка добавлена')
+      await importOpenAlexResult(firstExternal)
     } catch (error) {
       setDoiStatus(error.message)
     }
@@ -433,22 +540,86 @@ export default function KnowledgePanel({
           <aside className="doi-card">
             <div className="doi-card__title">
               <Icon name="link" />
-              <h3>DOI или URL статьи</h3>
+              <h3>DOI, URL или название статьи</h3>
             </div>
             <input
               type="text"
               value={doi}
-              onChange={(event) => setDoi(event.target.value)}
+              onChange={(event) => {
+                setDoi(event.target.value)
+                setDoiStatus('')
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') addDoi()
               }}
-              placeholder="10.1038/s41586-020..."
+              placeholder="10.1038/s41586-020... или запрос к OpenAlex"
             />
-            <button type="button" onClick={addDoi}>
+            <button
+              className="doi-card__action"
+              type="button"
+              onClick={addDoi}
+              disabled={!doi.trim() || importingOpenAlexKey !== ''}
+            >
               <Icon name="plus" />
               Добавить ссылку
             </button>
-            {doiStatus && <p>{doiStatus}</p>}
+            {doiStatus && <p className="doi-card__status">{doiStatus}</p>}
+
+            {doi.trim().length >= MIN_OPENALEX_QUERY_LENGTH && (
+              <div className="doi-suggestions">
+                <div className="doi-suggestions__head">
+                  <span>Варианты OpenAlex</span>
+                  <small>
+                    {searchingOpenAlex
+                      ? 'Ищем...'
+                      : openAlexResults.external.length > 0
+                        ? `${openAlexResults.external.length} найдено`
+                        : 'Без совпадений'}
+                  </small>
+                </div>
+
+                {openAlexResults.local.length > 0 && (
+                  <p className="doi-suggestions__hint">
+                    Уже в проекте найдено совпадений: {openAlexResults.local.length}
+                  </p>
+                )}
+
+                {openAlexResults.external.map((item) => {
+                  const itemKey = openAlexResultKey(item)
+                  const meta = openAlexMeta(item)
+                  const description = openAlexDescription(item)
+
+                  return (
+                    <button
+                      key={itemKey}
+                      className={`doi-suggestion ${item?.already_added ? 'doi-suggestion--added' : ''}`}
+                      type="button"
+                      onClick={() => importOpenAlexResult(item)}
+                      disabled={item?.already_added || importingOpenAlexKey === itemKey}
+                    >
+                      <div className="doi-suggestion__copy">
+                        <strong>{openAlexTitle(item)}</strong>
+                        {meta && <span>{meta}</span>}
+                        {description && <small>{description}</small>}
+                      </div>
+                      <em>
+                        {importingOpenAlexKey === itemKey
+                          ? 'Импорт...'
+                          : item?.already_added
+                            ? 'Уже в библиотеке'
+                            : 'Добавить'}
+                      </em>
+                    </button>
+                  )
+                })}
+
+                {!searchingOpenAlex && openAlexResults.query && openAlexResults.external.length === 0 && (
+                  <div className="doi-suggestions__empty">
+                    {openAlexResults.external_error || 'По этому запросу OpenAlex пока ничего не вернул.'}
+                  </div>
+                )}
+              </div>
+            )}
           </aside>
         </div>
       </section>
