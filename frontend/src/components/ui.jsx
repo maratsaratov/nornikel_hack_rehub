@@ -2,17 +2,20 @@ import React, { useEffect } from 'react'
 
 export function Modal({ title, children, onClose, footer }) {
   useEffect(() => {
-    const h = (e) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
+    const handler = (e) => e.key === 'Escape' && onClose()
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
   }, [onClose])
+
   return (
     <div className="modal-overlay" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2>{title}</h2>
           <div className="spacer" />
-          <button className="btn ghost" onClick={onClose}>✕</button>
+          <button className="btn secondary btn-close" onClick={onClose} aria-label="Закрыть окно">
+            ×
+          </button>
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}

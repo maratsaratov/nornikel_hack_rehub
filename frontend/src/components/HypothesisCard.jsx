@@ -10,68 +10,75 @@ const STATUSES = [
 
 export default function HypothesisCard({ h, rank, onUpdate, onDelete }) {
   const [expanded, setExpanded] = useState(false)
-  const [openRat, setOpenRat] = useState(null)   // какая ось-обоснование раскрыта
+  const [openRat, setOpenRat] = useState(null)
   const [notes, setNotes] = useState(h.expert_notes || '')
   const eff = effectiveScores(h)
 
   const setStatus = (status) => onUpdate(h.id, { status })
 
   const overrideScore = (key, raw) => {
-    const val = raw === '' ? null : Math.max(0, Math.min(100, Number(raw)))
-    onUpdate(h.id, { expert_scores: { [key]: val } })
+    const value = raw === '' ? null : Math.max(0, Math.min(100, Number(raw)))
+    onUpdate(h.id, { expert_scores: { [key]: value } })
   }
+
   const resetOverrides = () => onUpdate(h.id, {
     expert_scores: { novelty: null, value: null, feasibility: null, risk: null },
   })
 
-  const hasOverrides = h.expert_scores && Object.keys(h.expert_scores).length > 0
+  const hasOverrides = h.expert_scores && Object.values(h.expert_scores).some((value) => value != null)
 
   return (
-    <div className={`card hyp status-${h.status}`}>
+    <article className={`card hyp status-${h.status}`}>
       <div className="hyp-head">
         <div className="rank-badge">
           <span className="rk">#{rank}</span>
-          <div className="comp" title="Итоговый ранг = прозрачная взвешенная сумма оценок">
+          <div className="comp" title="Итоговый ранг — взвешенная сумма оценок">
             {h._composite}
-            <small>ранг</small>
+            <small>rank</small>
           </div>
         </div>
+
         <div className="hyp-body">
-          <p className="hyp-statement">{h.statement}</p>
-          {h.tags && h.tags.length > 0 && (
-            <div className="hyp-tags">
-              {h.tags.map((t, i) => <span className="tag" key={i}>{t}</span>)}
-            </div>
-          )}
+          <div className="hyp-copy">
+            <p className="hyp-statement">{h.statement}</p>
+            {h.tags && h.tags.length > 0 && (
+              <div className="hyp-tags">
+                {h.tags.map((tag, index) => (
+                  <span className="tag" key={index}>{tag}</span>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="scores">
             {DIMS.map((d) => {
-              const v = eff[d.key] ?? 0
+              const value = eff[d.key] ?? 0
               const overridden = h.expert_scores && h.expert_scores[d.key] != null
-              const col = d.key === 'risk' ? d.color : scoreColor(v)
+              const tone = d.key === 'risk' ? 'var(--ink)' : scoreColor(value)
+
               return (
-                <div
+                <button
+                  type="button"
                   className={`sbar ${overridden ? 'overridden' : ''}`}
                   key={d.key}
-                  style={{ '--accent': d.color }}
                   onClick={() => setOpenRat(openRat === d.key ? null : d.key)}
                 >
                   <div className="sb-top">
-                    <span className="sb-label" style={{ color: d.color }}>{d.label}</span>
-                    <span className="sb-val" style={{ color: col }}>{Math.round(v)}</span>
+                    <span className="sb-label">{d.label}</span>
+                    <span className="sb-val" style={{ color: tone }}>{Math.round(value)}</span>
                   </div>
                   <div className="track">
-                    <div className="fill" style={{ width: `${v}%`, background: d.color }} />
+                    <div className="fill" style={{ width: `${value}%` }} />
                   </div>
-                </div>
+                </button>
               )
             })}
           </div>
 
           {openRat && (
-            <div className="rationale-pop" style={{ '--accent': DIMS.find((d) => d.key === openRat).color }}>
-              <b>{DIMS.find((d) => d.key === openRat).label}: </b>
-              {h.rationales[openRat] || 'Обоснование не предоставлено моделью.'}
+            <div className="rationale-pop">
+              <b>{DIMS.find((d) => d.key === openRat)?.label}: </b>
+              {h.rationales?.[openRat] || 'Обоснование для этой оси не было возвращено моделью.'}
             </div>
           )}
         </div>
@@ -79,22 +86,28 @@ export default function HypothesisCard({ h, rank, onUpdate, onDelete }) {
 
       <div className="hyp-actions">
         <div className="status-pills">
-          {STATUSES.map((s) => (
+          {STATUSES.map((status) => (
             <button
-              key={s.key}
-              data-s={s.key}
-              className={h.status === s.key ? 'on' : ''}
-              onClick={() => setStatus(s.key)}
+              key={status.key}
+              type="button"
+              data-s={status.key}
+              className={h.status === status.key ? 'on' : ''}
+              onClick={() => setStatus(status.key)}
             >
-              {s.label}
+              {status.label}
             </button>
           ))}
         </div>
-        <div style={{ flex: 1 }} />
-        <button className="collapse-toggle" onClick={() => setExpanded(!expanded)}>
-          {expanded ? '▲ Свернуть' : '▼ Обоснование, механизм, проверка, источники'}
+
+        <div className="hyp-actions__spacer" />
+
+        <button className="collapse-toggle" type="button" onClick={() => setExpanded(!expanded)}>
+          {expanded ? 'Свернуть детали' : 'Открыть обоснование и экспертизу'}
         </button>
-        <button className="btn ghost sm danger" title="Удалить гипотезу" onClick={() => onDelete(h.id)}>🗑</button>
+
+        <button className="btn secondary btn-compact" type="button" onClick={() => onDelete(h.id)}>
+          Удалить
+        </button>
       </div>
 
       {expanded && (
@@ -105,71 +118,75 @@ export default function HypothesisCard({ h, rank, onUpdate, onDelete }) {
               <p>{h.rationale}</p>
             </div>
           )}
+
           {h.mechanism && (
             <div className="detail-block">
               <h4>Предполагаемый механизм</h4>
               <p>{h.mechanism}</p>
             </div>
           )}
+
           {h.validation && (
             <div className="detail-block">
-              <h4>Как проверить (эксперимент)</h4>
+              <h4>Как проверить</h4>
               <p>{h.validation}</p>
             </div>
           )}
+
           {h.evidence && h.evidence.length > 0 && (
             <div className="detail-block">
-              <h4>Опора на источники ({h.evidence.length})</h4>
-              {h.evidence.map((ev, i) => (
-                <div className="evidence-item" key={i}>
-                  <span className="ev-src">📎</span>
-                  <div className="ev-body">
-                    {ev.title && <div style={{ fontWeight: 700, fontSize: 12.5 }}>{ev.title}</div>}
-                    {ev.snippet && <div className="ev-snip">«{ev.snippet}»</div>}
-                    {ev.relevance && <div className="ev-rel">→ {ev.relevance}</div>}
+              <h4>Опорные источники ({h.evidence.length})</h4>
+              <div className="evidence-list">
+                {h.evidence.map((ev, index) => (
+                  <div className="evidence-item" key={index}>
+                    <div className="ev-body">
+                      {ev.title && <div className="ev-title">{ev.title}</div>}
+                      {ev.snippet && <div className="ev-snip">«{ev.snippet}»</div>}
+                      {ev.relevance && <div className="ev-rel">{ev.relevance}</div>}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
 
           <div className="expert-panel">
-            <h4 style={{ margin: 0, fontSize: 12, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--ink-faint)' }}>
-              Экспертная корректировка
-            </h4>
+            <h4>Экспертная корректировка</h4>
             <div className="override-grid">
               {DIMS.map((d) => (
                 <div className="ov" key={d.key}>
-                  <label style={{ color: d.color, fontWeight: 600 }}>{d.label}</label>
+                  <label>{d.label}</label>
                   <input
-                    type="number" min="0" max="100"
+                    type="number"
+                    min="0"
+                    max="100"
                     defaultValue={h.expert_scores && h.expert_scores[d.key] != null ? h.expert_scores[d.key] : ''}
                     placeholder={String(Math.round(h.scores[d.key] ?? 0))}
                     onBlur={(e) => {
-                      const cur = h.expert_scores && h.expert_scores[d.key] != null ? String(h.expert_scores[d.key]) : ''
-                      if (e.target.value !== cur) overrideScore(d.key, e.target.value)
+                      const current = h.expert_scores && h.expert_scores[d.key] != null ? String(h.expert_scores[d.key]) : ''
+                      if (e.target.value !== current) overrideScore(d.key, e.target.value)
                     }}
                   />
                 </div>
               ))}
             </div>
-            <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'flex-start' }}>
-              <textarea
-                style={{ flex: 1, minHeight: 44, border: '1px solid var(--line-strong)', borderRadius: 8, padding: '8px 10px', fontSize: 13, resize: 'vertical' }}
-                placeholder="Заметки эксперта: замечания, корректировки, следующий шаг…"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                onBlur={() => notes !== (h.expert_notes || '') && onUpdate(h.id, { expert_notes: notes })}
-              />
-            </div>
+
+            <textarea
+              className="expert-notes"
+              placeholder="Заметки эксперта: уточнения, сомнения, следующий шаг проверки…"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              onBlur={() => notes !== (h.expert_notes || '') && onUpdate(h.id, { expert_notes: notes })}
+            />
+
             {hasOverrides && (
-              <button className="btn ghost sm" style={{ marginTop: 6 }} onClick={resetOverrides}>
-                ↺ Сбросить ручные оценки (вернуть оценки модели)
+              <button className="btn secondary" type="button" onClick={resetOverrides}>
+                Сбросить ручные оценки
               </button>
             )}
           </div>
         </div>
       )}
-    </div>
+    </article>
   )
 }

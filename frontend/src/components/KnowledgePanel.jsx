@@ -1,8 +1,21 @@
 import React, { useState } from 'react'
 import { Modal, Field, TYPE_LABEL } from './ui.jsx'
 
-const EMPTY = { title: '', content: '', source_type: 'literature', authors: '', year: '', reference: '' }
-const EMPTY_RESULTS = { query: '', local: [], external: [], external_error: null }
+const EMPTY = {
+  title: '',
+  content: '',
+  source_type: 'literature',
+  authors: '',
+  year: '',
+  reference: '',
+}
+
+const EMPTY_RESULTS = {
+  query: '',
+  local: [],
+  external: [],
+  external_error: null,
+}
 
 const WORK_TYPE_LABEL = {
   article: 'Статья',
@@ -10,7 +23,7 @@ const WORK_TYPE_LABEL = {
   dataset: 'Набор данных',
   dissertation: 'Диссертация',
   preprint: 'Препринт',
-  report: 'Отчет',
+  report: 'Отчёт',
 }
 
 function compactText(value) {
@@ -81,7 +94,9 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
   const [searching, setSearching] = useState(false)
   const [importingKey, setImportingKey] = useState(null)
 
-  const upd = (key) => (e) => setForm({ ...form, [key]: e.target.value })
+  const canSearchCatalog = typeof onSearch === 'function'
+  const canImportOpenAlex = typeof onImportOpenAlex === 'function'
+  const updateField = (key) => (e) => setForm({ ...form, [key]: e.target.value })
 
   async function submit() {
     if (!form.title.trim() || !form.content.trim()) return
@@ -96,6 +111,8 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
   }
 
   async function runSearch() {
+    if (!canSearchCatalog) return
+
     const cleaned = query.trim()
     if (cleaned.length < 2) {
       setResults(EMPTY_RESULTS)
@@ -124,6 +141,8 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
   }
 
   async function importResult(source) {
+    if (!canImportOpenAlex) return
+
     const key = resultKey(source)
     setImportingKey(key)
     try {
@@ -150,28 +169,35 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
         <h3>База знаний</h3>
         <span className="count">{sources.length}</span>
         <div className="spacer" />
-        <button className="btn sm" onClick={() => setOpen(true)}>+ Источник</button>
+        <button className="btn primary" type="button" onClick={() => setOpen(true)}>
+          Добавить источник
+        </button>
       </div>
-      <div className="card-body" style={{ paddingTop: 4, paddingBottom: 4 }}>
-        <div className="source-tools">
-          <div className="source-search-row">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-              placeholder="Ключевые слова, DOI, авторы..."
-            />
-            <button className="btn sm primary" disabled={searching} onClick={runSearch}>
-              {searching ? 'Поиск...' : 'Найти'}
-            </button>
-            {(query || results) && (
-              <button className="btn sm" onClick={clearSearch}>Сбросить</button>
-            )}
+
+      <div className="card-body knowledge-panel">
+        {canSearchCatalog && (
+          <div className="source-tools">
+            <div className="source-search-row">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+                placeholder="Ключевые слова, DOI, авторы..."
+              />
+              <button className="btn primary btn-compact" type="button" disabled={searching} onClick={runSearch}>
+                {searching ? 'Поиск...' : 'Найти'}
+              </button>
+              {(query || results) && (
+                <button className="btn secondary btn-compact" type="button" onClick={clearSearch}>
+                  Сбросить
+                </button>
+              )}
+            </div>
+            <p className="section-hint">
+              Поиск идёт по источникам проекта и по внешнему каталогу. Подходящие публикации можно сразу импортировать в базу.
+            </p>
           </div>
-          <p className="section-hint">
-            Поиск идет по источникам проекта и по внешнему источнику. Внешние статьи можно сразу добавить в базу.
-          </p>
-        </div>
+        )}
 
         {results && (
           <div className="search-results">
@@ -196,7 +222,7 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
                     </div>
                     {metaText(source) && <div className="search-meta">{metaText(source)}</div>}
                     {sourceDescription(source) && <div className="search-description">{sourceDescription(source)}</div>}
-                    {source.reference && <div className="search-links">{source.reference}</div>}
+                    {source.reference && <div className="search-links"><span>{source.reference}</span></div>}
                   </div>
                 ))
               )}
@@ -204,18 +230,19 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
 
             <div className="search-group">
               <div className="search-group-head">
-                <h4>Внешний источник</h4>
+                <h4>Внешний каталог</h4>
                 <span>{results.external.length}</span>
               </div>
               {results.external_error && (
                 <p className="section-hint search-error">{results.external_error}</p>
               )}
               {!results.external_error && results.external.length === 0 ? (
-                <p className="section-hint">Внешний источник ничего не вернул по этому запросу.</p>
+                <p className="section-hint">Внешний каталог ничего не вернул по этому запросу.</p>
               ) : (
                 results.external.map((source) => {
                   const key = resultKey(source)
                   const disabled = source.already_added || importingKey === key
+
                   return (
                     <div className="search-item" key={`external-${key}`}>
                       <div className="search-top">
@@ -226,13 +253,16 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
                           </div>
                           <div className="search-title">{displayTitle(source)}</div>
                         </div>
-                        <button
-                          className={`btn sm ${source.already_added ? '' : 'primary'}`}
-                          disabled={disabled}
-                          onClick={() => importResult(source)}
-                        >
-                          {importingKey === key ? 'Добавление...' : source.already_added ? 'Уже добавлен' : 'Добавить'}
-                        </button>
+                        {canImportOpenAlex && (
+                          <button
+                            className={`btn ${source.already_added ? 'secondary' : 'primary'} btn-compact search-action`}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => importResult(source)}
+                          >
+                            {importingKey === key ? 'Добавление...' : source.already_added ? 'Уже добавлен' : 'Добавить'}
+                          </button>
+                        )}
                       </div>
                       {metaText(source) && <div className="search-meta">{metaText(source)}</div>}
                       {miniDescription(source) && <div className="search-description">{miniDescription(source)}</div>}
@@ -252,7 +282,7 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
             </div>
 
             {!results.external_error && results.local.length === 0 && results.external.length === 0 && (
-              <p className="section-hint" style={{ marginTop: -4 }}>
+              <p className="section-hint">
                 По запросу «{results.query}» ничего не найдено.
               </p>
             )}
@@ -261,29 +291,38 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
 
         {sources.length > 0 && <div className="source-list-title">Все источники проекта</div>}
         {sources.length === 0 && (
-          <p className="section-hint" style={{ padding: '10px 0' }}>
-            Добавьте литературу, отчеты и эксперименты. На их основе будут строиться гипотезы.
+          <p className="section-hint">
+            Добавьте статьи, отчёты и экспериментальные заметки. Эти материалы станут основой retrieval и объяснений для гипотез.
           </p>
         )}
+
         {sources.map((source) => (
-          <div className="source" key={source.id}>
+          <article className="source" key={source.id}>
             <div className="s-top">
               <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
               <span className="s-title">{displayTitle(source)}</span>
-              <button className="btn ghost sm danger" title="Удалить" onClick={() => onDelete(source.id)}>✕</button>
+              <button
+                className="btn secondary btn-compact source-remove"
+                type="button"
+                title="Удалить источник"
+                onClick={() => onDelete(source.id)}
+              >
+                Удалить
+              </button>
             </div>
+
             {(metaText(source) || sourceDescription(source)) && (
               <div className="s-excerpt">
                 {metaText(source) && (
-                  <b style={{ color: 'var(--ink-soft)' }}>
+                  <b>
                     {metaText(source)}
-                    {sourceDescription(source) ? ' - ' : ''}
+                    {sourceDescription(source) ? ' · ' : ''}
                   </b>
                 )}
                 {sourceDescription(source)}
               </div>
             )}
-          </div>
+          </article>
         ))}
       </div>
 
@@ -293,38 +332,44 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
           onClose={() => setOpen(false)}
           footer={(
             <>
-              <button className="btn" onClick={() => setOpen(false)}>Отмена</button>
-              <button className="btn primary" disabled={saving} onClick={submit}>
+              <button className="btn secondary" type="button" onClick={() => setOpen(false)}>
+                Отмена
+              </button>
+              <button className="btn primary" type="button" disabled={saving} onClick={submit}>
                 {saving ? 'Сохранение...' : 'Добавить'}
               </button>
             </>
           )}
         >
           <Field label="Тип источника">
-            <select value={form.source_type} onChange={upd('source_type')}>
+            <select value={form.source_type} onChange={updateField('source_type')}>
               <option value="literature">Литература / статья</option>
-              <option value="report">Внутренний отчет</option>
+              <option value="report">Внутренний отчёт</option>
               <option value="experiment">Эксперимент / лабораторные данные</option>
             </select>
           </Field>
+
           <Field label="Заголовок *">
-            <input value={form.title} onChange={upd('title')} placeholder="Название статьи / отчета" />
+            <input value={form.title} onChange={updateField('title')} placeholder="Название статьи или отчёта" />
           </Field>
+
           <div className="row">
             <Field label="Авторы / подразделение">
-              <input value={form.authors} onChange={upd('authors')} placeholder="Petrov et al." />
+              <input value={form.authors} onChange={updateField('authors')} placeholder="Petrov et al." />
             </Field>
             <Field label="Год">
-              <input value={form.year} onChange={upd('year')} placeholder="2023" className="num-input" />
+              <input value={form.year} onChange={updateField('year')} placeholder="2025" className="num-input" />
             </Field>
           </div>
-          <Field label="Ссылка / DOI / инв. номер">
-            <input value={form.reference} onChange={upd('reference')} placeholder="DOI, ссылка или ID отчета" />
+
+          <Field label="Ссылка / DOI / инвентарный номер">
+            <input value={form.reference} onChange={updateField('reference')} placeholder="DOI, ссылка или номер отчёта" />
           </Field>
+
           <Field label="Содержание / аннотация *">
             <textarea
               value={form.content}
-              onChange={upd('content')}
+              onChange={updateField('content')}
               rows={7}
               placeholder="Вставьте текст, аннотацию или ключевые выводы источника..."
             />
