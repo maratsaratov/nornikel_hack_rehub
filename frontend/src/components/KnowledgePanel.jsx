@@ -3,6 +3,14 @@ import { Modal, Field, TYPE_LABEL } from './ui.jsx'
 
 const EMPTY = { title: '', content: '', source_type: 'literature', authors: '', year: '', reference: '' }
 const EMPTY_RESULTS = { query: '', local: [], external: [], external_error: null }
+const ACCEPTED_DOCUMENTS = '.pdf,.docx,.xlsx,.csv,.txt'
+
+const DOCUMENT_STATUS_LABEL = {
+  uploaded: 'загружен',
+  parsed: 'распарсен',
+  failed: 'ошибка',
+  unsupported: 'не поддерживается',
+}
 
 const WORK_TYPE_LABEL = {
   article: 'Статья',
@@ -72,7 +80,33 @@ function sourceDescription(source) {
   return previewText(source)
 }
 
-export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onImportOpenAlex }) {
+function documentStatusLabel(status) {
+  return DOCUMENT_STATUS_LABEL[status] || status || 'unknown'
+}
+
+function documentMeta(document) {
+  const parts = [
+    document.file_type?.toUpperCase(),
+    `${document.chunk_count || 0} чанков`,
+    `${document.table_count || 0} таблиц`,
+  ]
+  return parts.filter(Boolean).join(' / ')
+}
+
+function documentTitle(document) {
+  return compactText(document.metadata?.title) || document.filename
+}
+
+export default function KnowledgePanel({
+  sources,
+  documents = [],
+  onAdd,
+  onDelete,
+  onSearch,
+  onImportOpenAlex,
+  onUploadDocument,
+  onDeleteDocument,
+}) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
@@ -80,6 +114,10 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
   const [results, setResults] = useState(null)
   const [searching, setSearching] = useState(false)
   const [importingKey, setImportingKey] = useState(null)
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [fileInputKey, setFileInputKey] = useState(0)
+  const [uploading, setUploading] = useState(false)
+  const [deletingDocumentId, setDeletingDocumentId] = useState(null)
 
   const upd = (key) => (e) => setForm({ ...form, [key]: e.target.value })
 
@@ -144,11 +182,33 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
     }
   }
 
+  async function uploadSelectedFile() {
+    if (!selectedFile || !onUploadDocument) return
+    setUploading(true)
+    try {
+      await onUploadDocument(selectedFile)
+      setSelectedFile(null)
+      setFileInputKey((value) => value + 1)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function removeDocument(id) {
+    if (!onDeleteDocument) return
+    setDeletingDocumentId(id)
+    try {
+      await onDeleteDocument(id)
+    } finally {
+      setDeletingDocumentId(null)
+    }
+  }
+
   return (
     <div className="card">
       <div className="card-head">
         <h3>База знаний</h3>
-        <span className="count">{sources.length}</span>
+        <span className="count">{sources.length + documents.length}</span>
         <div className="spacer" />
         <button className="btn sm" onClick={() => setOpen(true)}>+ Источник</button>
       </div>
@@ -172,6 +232,59 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
             Поиск идет по источникам проекта и по внешнему источнику. Внешние статьи можно сразу добавить в базу.
           </p>
         </div>
+
+        <div className="document-upload">
+          <div className="doc-upload-row">
+            <input
+              key={fileInputKey}
+              className="doc-file-input"
+              type="file"
+              accept={ACCEPTED_DOCUMENTS}
+              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+            />
+            <button
+              className="btn sm primary"
+              disabled={!selectedFile || uploading}
+              onClick={uploadSelectedFile}
+            >
+              {uploading ? 'Загрузка...' : 'Загрузить файл'}
+            </button>
+          </div>
+          <p className="section-hint">
+            PDF, DOCX, XLSX, CSV и TXT сохраняются как документы проекта и парсятся отдельно от генерации гипотез.
+          </p>
+        </div>
+
+        {documents.length > 0 && (
+          <div className="document-list">
+            <div className="source-list-title">Файлы проекта</div>
+            {documents.map((document) => (
+              <div className="document-item" key={document.id}>
+                <div className="document-top">
+                  <span className={`doc-status status-${document.parse_status}`}>
+                    {documentStatusLabel(document.parse_status)}
+                  </span>
+                  <span className="document-title">{documentTitle(document)}</span>
+                  <button
+                    className="btn ghost sm danger"
+                    disabled={deletingDocumentId === document.id}
+                    title="Удалить файл"
+                    onClick={() => removeDocument(document.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="document-meta">
+                  <span>{document.filename}</span>
+                  <span>{documentMeta(document)}</span>
+                </div>
+                {document.raw_text_preview && (
+                  <div className="document-preview">{document.raw_text_preview}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {results && (
           <div className="search-results">
@@ -260,7 +373,7 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
         )}
 
         {sources.length > 0 && <div className="source-list-title">Все источники проекта</div>}
-        {sources.length === 0 && (
+        {sources.length === 0 && documents.length === 0 && (
           <p className="section-hint" style={{ padding: '10px 0' }}>
             Добавьте литературу, отчеты и эксперименты. На их основе будут строиться гипотезы.
           </p>

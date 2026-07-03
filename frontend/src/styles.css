@@ -158,6 +158,72 @@ a { color: var(--brand); }
   border-color: var(--brand);
   box-shadow: 0 0 0 3px var(--brand-soft);
 }
+.document-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.doc-upload-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.doc-file-input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: #fff;
+}
+.document-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.document-item { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.document-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.document-top { display: flex; align-items: flex-start; gap: 8px; }
+.document-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 650; line-height: 1.35; }
+.document-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.document-preview {
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.doc-status {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.status-parsed { background: #ecfdf5; color: #047857; }
+.status-uploaded { background: #eef2ff; color: #4338ca; }
+.status-failed { background: #fef2f2; color: #b91c1c; }
+.status-unsupported { background: #fff7ed; color: #c2410c; }
 .search-results { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
 .search-group {
   border: 1px solid var(--line);
@@ -354,4 +420,5 @@ select.proj-select { max-width: 340px; border: 1px solid var(--line-strong); bor
   .layout { grid-template-columns: 1fr; }
   .weights, .scores, .override-grid { grid-template-columns: 1fr 1fr; }
   .source-search-row { flex-wrap: wrap; }
+  .doc-upload-row { flex-wrap: wrap; }
 }

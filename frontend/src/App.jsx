@@ -18,6 +18,7 @@ export default function App() {
   const [projects, setProjects] = useState([])
   const [currentId, setCurrentId] = useState(null)
   const [sources, setSources] = useState([])
+  const [documents, setDocuments] = useState([])
   const [hypotheses, setHypotheses] = useState([])
   const [lastRun, setLastRun] = useState(null)
 
@@ -48,6 +49,7 @@ export default function App() {
   useEffect(() => {
     if (!currentId) {
       setSources([])
+      setDocuments([])
       setHypotheses([])
       setLastRun(null)
       return
@@ -55,10 +57,12 @@ export default function App() {
 
     Promise.all([
       api.listSources(currentId),
+      api.listDocuments(currentId),
       api.listHypotheses(currentId),
       api.listRuns(currentId),
-    ]).then(([src, hyp, runs]) => {
+    ]).then(([src, docs, hyp, runs]) => {
       setSources(src)
+      setDocuments(docs)
       setHypotheses(hyp)
       setLastRun(runs[0] || null)
     }).catch((e) => flash(e.message, 'err'))
@@ -67,6 +71,7 @@ export default function App() {
   const project = useMemo(() => projects.find((p) => p.id === currentId) || null, [projects, currentId])
   const reloadHyps = () => api.listHypotheses(currentId).then(setHypotheses).catch(() => {})
   const reloadSources = () => api.listSources(currentId).then((src) => { setSources(src); return src })
+  const reloadDocuments = () => api.listDocuments(currentId).then((docs) => { setDocuments(docs); return docs })
 
   async function saveProject(form) {
     if (form.id) {
@@ -106,6 +111,30 @@ export default function App() {
     try {
       await api.deleteSource(id)
       setSources((prev) => prev.filter((item) => item.id !== id))
+    } catch (e) {
+      flash(e.message, 'err')
+      throw e
+    }
+  }
+
+  async function uploadDocument(file) {
+    try {
+      const res = await api.uploadDocument(currentId, file, true)
+      await reloadDocuments()
+      const status = res.parse_run?.status || res.document?.parse_status
+      flash(status === 'parsed' ? 'Файл загружен и распарсен' : `Файл загружен: ${status || 'uploaded'}`)
+      return res
+    } catch (e) {
+      flash(e.message, 'err')
+      throw e
+    }
+  }
+
+  async function deleteDocument(id) {
+    try {
+      await api.deleteDocument(id)
+      setDocuments((prev) => prev.filter((item) => item.id !== id))
+      flash('Файл удалён')
     } catch (e) {
       flash(e.message, 'err')
       throw e
@@ -249,10 +278,13 @@ export default function App() {
 
             <KnowledgePanel
               sources={sources}
+              documents={documents}
               onAdd={addSource}
               onDelete={deleteSource}
               onSearch={searchSourceCatalog}
               onImportOpenAlex={importOpenAlexSource}
+              onUploadDocument={uploadDocument}
+              onDeleteDocument={deleteDocument}
             />
           </aside>
 
