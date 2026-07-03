@@ -1,0 +1,2 @@
+"""Standalone document ingestion subsystem."""
+

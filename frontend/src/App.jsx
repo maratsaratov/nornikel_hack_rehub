@@ -217,6 +217,8 @@ export default function App() {
                 project={project}
                 sources={sources}
                 documents={documents}
+                documentTypes={config?.supported_document_types}
+                maxUploadMb={config?.max_upload_mb}
                 onAdd={addSource}
                 onDelete={deleteSource}
                 onSearch={searchSources}

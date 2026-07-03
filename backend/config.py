@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
@@ -67,6 +69,9 @@ class Config:
     OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "")
     OPENALEX_TIMEOUT = float(os.getenv("OPENALEX_TIMEOUT", "12"))
     OPENALEX_PER_PAGE = int(os.getenv("OPENALEX_PER_PAGE", "6"))
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "storage", "uploads"))
+    MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+    MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
     # ── App behaviour ───────────────────────────────────────────────────────
     SEED_DEMO = _bool("SEED_DEMO", True)

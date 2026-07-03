@@ -23,6 +23,9 @@ const CARD_METRICS = [
   { novelty: 'Средняя', value: 9 },
 ]
 
+const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt']
+const MAX_DOCUMENT_UPLOAD_MB = 25
+
 function compactText(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ')
   if (value === null || value === undefined) return ''
@@ -66,6 +69,11 @@ function sourceSummary(source) {
 
 function sourceAuthor(source) {
   return compactText(source?.authors || source?.metadata?.authors || source?.origin || 'Внутренняя база')
+}
+
+function fileExtension(filename) {
+  const parts = String(filename || '').toLowerCase().split('.')
+  return parts.length > 1 ? parts.pop() : ''
 }
 
 function makeItems(sources, documents) {
@@ -235,6 +243,8 @@ function KnowledgeCard({ item, selected, onToggle, onDeleteDocument }) {
 export default function KnowledgePanel({
   sources,
   documents = [],
+  documentTypes = ACCEPTED_DOCUMENT_EXTENSIONS,
+  maxUploadMb = MAX_DOCUMENT_UPLOAD_MB,
   onSearch,
   onImportOpenAlex,
   onUploadDocument,
@@ -260,6 +270,18 @@ export default function KnowledgePanel({
   })
   const fileInputRef = useRef(null)
   const selectedOnceRef = useRef(false)
+  const acceptedDocumentExtensions = useMemo(() => {
+    const normalized = (documentTypes || [])
+      .map((ext) => String(ext || '').toLowerCase().replace(/^\./, ''))
+      .filter(Boolean)
+    return normalized.length ? normalized : ACCEPTED_DOCUMENT_EXTENSIONS
+  }, [documentTypes])
+  const acceptedDocuments = useMemo(
+    () => acceptedDocumentExtensions.map((ext) => `.${ext}`).join(','),
+    [acceptedDocumentExtensions],
+  )
+  const maxDocumentUploadMb = Number(maxUploadMb) > 0 ? Number(maxUploadMb) : MAX_DOCUMENT_UPLOAD_MB
+  const maxDocumentUploadBytes = maxDocumentUploadMb * 1024 * 1024
 
   const libraryItems = useMemo(() => makeItems(sources, documents), [sources, documents])
   const filterCounts = useMemo(() => {
@@ -322,11 +344,19 @@ export default function KnowledgePanel({
 
   async function handleFile(file) {
     if (!file || !onUploadDocument) return
-    setUploadStatus(`Загрузка: ${file.name}`)
+    const extension = fileExtension(file.name)
+    if (!acceptedDocumentExtensions.includes(extension)) {
+      setUploadStatus(`Unsupported file type: .${extension || 'unknown'}`)
+      return
+    }
+    if (file.size > maxDocumentUploadBytes) {
+      setUploadStatus(`File exceeds ${maxDocumentUploadMb} MB limit`)
+      return
+    }
+    setUploadStatus(`Uploading: ${file.name}`)
     try {
-      // TODO: реализовать backend-распаковку ZIP; сейчас ZIP оставлен в UI по макету и будет помечен как unsupported.
       await onUploadDocument(file)
-      setUploadStatus(`${file.name} загружен`)
+      setUploadStatus(`${file.name} uploaded`)
     } catch (error) {
       setUploadStatus(error.message)
     }
@@ -366,7 +396,7 @@ export default function KnowledgePanel({
       <section className="import-block">
         <div className="import-block__heading">
           <h2>Импорт данных</h2>
-          <span>Поддерживаемые форматы: PDF, XLSX, ZIP</span>
+          <span>Поддерживаемые форматы: {acceptedDocumentExtensions.map((ext) => ext.toUpperCase()).join(', ')}</span>
         </div>
 
         <div className="import-grid">
@@ -387,14 +417,17 @@ export default function KnowledgePanel({
           >
             <span className="file-drop__icon"><Icon name="upload" /></span>
             <strong>Перетащите файлы сюда или выберите на диске</strong>
-            <small>{uploadStatus || 'Максимальный размер файла: 50MB. Поддерживаются: PDF, XLSX, ZIP'}</small>
+            <small>{uploadStatus || `Максимальный размер файла: ${maxDocumentUploadMb} MB. Поддерживаются: ${acceptedDocumentExtensions.map((ext) => ext.toUpperCase()).join(', ')}`}</small>
           </button>
           <input
             ref={fileInputRef}
             className="visually-hidden"
             type="file"
-            accept=".pdf,.xlsx,.zip,.docx,.csv,.txt"
-            onChange={(event) => handleFile(event.target.files?.[0])}
+            accept={acceptedDocuments}
+            onChange={(event) => {
+              handleFile(event.target.files?.[0])
+              event.target.value = ''
+            }}
           />
 
           <aside className="doi-card">
