@@ -29,6 +29,19 @@ class IngestionError(RuntimeError):
     pass
 
 
+class FileTooLargeError(IngestionError):
+    pass
+
+
+def _too_large_error() -> str:
+    return f"File is too large. Maximum upload size is {Config.MAX_UPLOAD_MB} MB"
+
+
+def _ensure_upload_size_allowed(size) -> None:
+    if size is not None and size > Config.MAX_UPLOAD_BYTES:
+        raise FileTooLargeError(_too_large_error())
+
+
 def ensure_upload_dir() -> str:
     upload_dir = os.path.abspath(Config.UPLOAD_DIR)
     os.makedirs(upload_dir, exist_ok=True)
@@ -38,6 +51,7 @@ def ensure_upload_dir() -> str:
 def save_upload(project_id: int, file_storage) -> SourceDocument:
     if not file_storage or not file_storage.filename:
         raise IngestionError("No file was provided")
+    _ensure_upload_size_allowed(getattr(file_storage, "content_length", None) or None)
 
     upload_dir = ensure_upload_dir()
     original_filename = os.path.basename(file_storage.filename)
@@ -50,6 +64,12 @@ def save_upload(project_id: int, file_storage) -> SourceDocument:
     stored_path = os.path.abspath(os.path.join(upload_dir, f"project_{project_id}", stored_name))
     os.makedirs(os.path.dirname(stored_path), exist_ok=True)
     file_storage.save(stored_path)
+    try:
+        _ensure_upload_size_allowed(os.path.getsize(stored_path))
+    except IngestionError:
+        if os.path.exists(stored_path):
+            os.remove(stored_path)
+        raise
 
     document = SourceDocument(
         project_id=project_id,

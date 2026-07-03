@@ -4,6 +4,8 @@ import { Modal, Field, TYPE_LABEL } from './ui.jsx'
 const EMPTY = { title: '', content: '', source_type: 'literature', authors: '', year: '', reference: '' }
 const EMPTY_RESULTS = { query: '', local: [], external: [], external_error: null }
 const ACCEPTED_DOCUMENTS = '.pdf,.docx,.xlsx,.csv,.txt'
+const MAX_DOCUMENT_UPLOAD_MB = 25
+const MAX_DOCUMENT_UPLOAD_BYTES = MAX_DOCUMENT_UPLOAD_MB * 1024 * 1024
 
 const DOCUMENT_STATUS_LABEL = {
   uploaded: 'загружен',
@@ -31,6 +33,10 @@ function previewText(value, limit = 180) {
   const text = compactText(value).replace(/\s+/g, ' ')
   if (!text) return ''
   return text.length > limit ? `${text.slice(0, limit).trim()}...` : text
+}
+
+function fileSizeMb(size) {
+  return `${(size / (1024 * 1024)).toFixed(1)} МБ`
 }
 
 function displayTitle(item) {
@@ -93,6 +99,7 @@ export default function KnowledgePanel({
   const [searching, setSearching] = useState(false)
   const [importingKey, setImportingKey] = useState('')
   const [selectedFile, setSelectedFile] = useState(null)
+  const [uploadError, setUploadError] = useState('')
   const [fileInputKey, setFileInputKey] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [deletingDocumentId, setDeletingDocumentId] = useState(null)
@@ -154,14 +161,38 @@ export default function KnowledgePanel({
 
   async function uploadSelectedFile() {
     if (!selectedFile || !onUploadDocument) return
+    if (selectedFile.size > MAX_DOCUMENT_UPLOAD_BYTES) {
+      setUploadError(`Файл ${fileSizeMb(selectedFile.size)} больше лимита ${MAX_DOCUMENT_UPLOAD_MB} МБ`)
+      return
+    }
     setUploading(true)
     try {
       await onUploadDocument(selectedFile)
       setSelectedFile(null)
+      setUploadError('')
       setFileInputKey((key) => key + 1)
+    } catch (err) {
+      setUploadError(err.message)
     } finally {
       setUploading(false)
     }
+  }
+
+  function handleFileChange(e) {
+    const file = e.target.files?.[0] || null
+    if (!file) {
+      setSelectedFile(null)
+      setUploadError('')
+      return
+    }
+    if (file.size > MAX_DOCUMENT_UPLOAD_BYTES) {
+      setSelectedFile(null)
+      setUploadError(`Файл ${fileSizeMb(file.size)} больше лимита ${MAX_DOCUMENT_UPLOAD_MB} МБ`)
+      setFileInputKey((key) => key + 1)
+      return
+    }
+    setSelectedFile(file)
+    setUploadError('')
   }
 
   async function removeDocument(id) {
@@ -174,6 +205,8 @@ export default function KnowledgePanel({
     }
   }
 
+  const selectedFileName = selectedFile?.name || 'Выберите файл для парсинга'
+
   return (
     <div className="card">
       <div className="card-head">
@@ -185,95 +218,124 @@ export default function KnowledgePanel({
 
       <div className="card-body knowledge-panel">
         <div className="source-tools">
-          <div className="source-search-row">
-            <input
-              className="source-search-input"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
-              placeholder="Найти источник в проекте или OpenAlex"
-            />
-            <button className="btn secondary" onClick={runSearch} disabled={searching || !query.trim()}>
-              {searching ? 'Ищем...' : 'Найти'}
-            </button>
-            {results.query && (
-              <button className="btn ghost" onClick={clearSearch}>Сбросить</button>
-            )}
-          </div>
-
-          {results.query && (
-            <div className="search-results">
-              <div className="search-group">
-                <div className="search-group-head">
-                  <span>В проекте</span>
-                  <span className="count">{results.local.length}</span>
-                </div>
-                {results.local.length === 0 && <p className="section-hint">Совпадений в добавленных источниках нет.</p>}
-                {results.local.map((item) => (
-                  <div className="search-item" key={resultKey(item, 'local')}>
-                    <div className="search-item-title">{displayTitle(item)}</div>
-                    {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
-                    {sourceDescription(item) && <p className="search-item-desc">{sourceDescription(item)}</p>}
-                  </div>
-                ))}
+          <section className="source-tool-card source-tool-card--search">
+            <div className="tool-card-head">
+              <div>
+                <span className="tool-eyebrow">Literature Search</span>
+                <h4>Поиск литературы</h4>
               </div>
+              <span className="tool-chip">Project + OpenAlex</span>
+            </div>
 
-              <div className="search-group">
-                <div className="search-group-head">
-                  <span>OpenAlex</span>
-                  <span className="count">{results.external.length}</span>
-                </div>
-                {results.external_error && <p className="search-error">{results.external_error}</p>}
-                {results.external.length === 0 && !results.external_error && (
-                  <p className="section-hint">Внешних результатов нет.</p>
-                )}
-                {results.external.map((item) => {
-                  const key = resultKey(item, 'external')
-                  return (
-                    <div className="search-item" key={key}>
-                      <div className="search-actions">
-                        <div>
-                          <div className="search-item-title">{displayTitle(item)}</div>
-                          {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
-                        </div>
-                        <button
-                          className="btn secondary btn-compact"
-                          onClick={() => importResult(item)}
-                          disabled={importingKey === key}
-                        >
-                          {importingKey === key ? 'Импорт...' : 'Импорт'}
-                        </button>
-                      </div>
+            <div className="source-search-row">
+              <div className="source-search-box">
+                <span className="source-search-icon">⌕</span>
+                <input
+                  className="source-search-input"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
+                  placeholder="Название статьи, DOI, автор или тема"
+                />
+              </div>
+              <button className="btn primary" onClick={runSearch} disabled={searching || !query.trim()}>
+                {searching ? 'Ищем...' : 'Найти'}
+              </button>
+              {results.query && (
+                <button className="btn ghost" onClick={clearSearch}>Сбросить</button>
+              )}
+            </div>
+
+            {results.query && (
+              <div className="search-results">
+                <div className="search-group">
+                  <div className="search-group-head">
+                    <span>В проекте</span>
+                    <span className="count">{results.local.length}</span>
+                  </div>
+                  {results.local.length === 0 && <p className="section-hint">Совпадений в добавленных источниках нет.</p>}
+                  {results.local.map((item) => (
+                    <div className="search-item" key={resultKey(item, 'local')}>
+                      <div className="search-item-title">{displayTitle(item)}</div>
+                      {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
                       {sourceDescription(item) && <p className="search-item-desc">{sourceDescription(item)}</p>}
                     </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
+                  ))}
+                </div>
 
-          <div className="document-upload">
-            <div>
-              <h4>Файлы источников</h4>
-              <p className="section-hint">PDF, DOCX, XLSX, CSV и TXT сохраняются отдельно от генератора гипотез.</p>
+                <div className="search-group search-group--external">
+                  <div className="search-group-head">
+                    <span>OpenAlex</span>
+                    <span className="count">{results.external.length}</span>
+                  </div>
+                  {results.external_error && <p className="search-error">{results.external_error}</p>}
+                  {results.external.length === 0 && !results.external_error && (
+                    <p className="section-hint">Внешних результатов нет.</p>
+                  )}
+                  {results.external.map((item) => {
+                    const key = resultKey(item, 'external')
+                    return (
+                      <div className="search-item" key={key}>
+                        <div className="search-actions">
+                          <div>
+                            <div className="search-item-title">{displayTitle(item)}</div>
+                            {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
+                          </div>
+                          <button
+                            className="btn secondary btn-compact"
+                            onClick={() => importResult(item)}
+                            disabled={importingKey === key}
+                          >
+                            {importingKey === key ? 'Импорт...' : 'Импорт'}
+                          </button>
+                        </div>
+                        {sourceDescription(item) && <p className="search-item-desc">{sourceDescription(item)}</p>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="source-tool-card source-tool-card--upload">
+            <div className="tool-card-head">
+              <div>
+                <span className="tool-eyebrow">Document Parser</span>
+                <h4>Загрузка файлов</h4>
+              </div>
+              <span className="tool-chip">PDF DOCX XLSX CSV TXT</span>
             </div>
+            <p className="section-hint">Файлы до {MAX_DOCUMENT_UPLOAD_MB} МБ сохраняются и парсятся отдельно от генератора гипотез.</p>
             <div className="doc-upload-row">
-              <input
-                key={fileInputKey}
-                className="doc-file-input"
-                type="file"
-                accept={ACCEPTED_DOCUMENTS}
-                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-              />
-              <button className="btn secondary" onClick={uploadSelectedFile} disabled={!selectedFile || uploading}>
+              <label className={`doc-file-drop ${selectedFile ? 'has-file' : ''}`}>
+                <input
+                  key={fileInputKey}
+                  className="doc-file-input"
+                  type="file"
+                  accept={ACCEPTED_DOCUMENTS}
+                  onChange={handleFileChange}
+                />
+                <span className="doc-file-mark">FILE</span>
+                <span className="doc-file-copy">
+                  <strong>{selectedFileName}</strong>
+                  <small>Нажмите, чтобы выбрать PDF, DOCX, XLSX, CSV или TXT до {MAX_DOCUMENT_UPLOAD_MB} МБ</small>
+                </span>
+              </label>
+              <button className="btn primary" onClick={uploadSelectedFile} disabled={!selectedFile || uploading}>
                 {uploading ? 'Загрузка...' : 'Загрузить'}
               </button>
             </div>
-          </div>
+            {uploadError && <p className="upload-error">{uploadError}</p>}
+          </section>
         </div>
 
         {documents.length > 0 && (
           <div className="document-list">
+            <div className="list-section-head">
+              <span>Загруженные файлы</span>
+              <span className="count">{documents.length}</span>
+            </div>
             {documents.map((doc) => {
               const status = documentStatus(doc)
               return (

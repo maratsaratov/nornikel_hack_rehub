@@ -3,6 +3,7 @@ import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import inspect, or_, text
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from config import Config
 from db import db
@@ -21,6 +22,7 @@ from engine import generate_hypotheses
 import llm
 from openalex import search_works
 from ingestion.service import (
+    FileTooLargeError,
     IngestionError,
     delete_document as delete_ingested_document,
     document_preview,
@@ -138,9 +140,13 @@ def _ensure_source_origin_column():
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
-    app.config["MAX_CONTENT_LENGTH"] = Config.MAX_UPLOAD_MB * 1024 * 1024
+    app.config["MAX_CONTENT_LENGTH"] = Config.MAX_UPLOAD_BYTES
     CORS(app)
     db.init_app(app)
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_request_entity_too_large(_exc):
+        return jsonify({"error": f"File is too large. Maximum upload size is {Config.MAX_UPLOAD_MB} MB"}), 413
 
     with app.app_context():
         db.create_all()
@@ -372,6 +378,8 @@ def create_app():
             return jsonify({"error": "Project not found"}), 404
         try:
             document = save_upload(pid, request.files.get("file"))
+        except FileTooLargeError as exc:
+            return jsonify({"error": str(exc)}), 413
         except IngestionError as exc:
             return jsonify({"error": str(exc)}), 400
 

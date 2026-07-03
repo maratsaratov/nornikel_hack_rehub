@@ -34,7 +34,8 @@ class Config:
 
     # Document ingestion
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "storage", "uploads"))
-    MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
+    MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+    MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
     # Future AI provider layer. The current hypothesis engine still uses llm.py.
     AI_DEFAULT_PROVIDER = os.getenv("AI_DEFAULT_PROVIDER", "noop")
