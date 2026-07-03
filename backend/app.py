@@ -24,6 +24,8 @@ import reranker
 import embeddings
 import connectors
 import export
+from openalex import search_works
+from ai.providers.base import ProviderUnavailableError
 from ingestion.service import (
     FileTooLargeError,
     IngestionError,
@@ -594,6 +596,116 @@ def create_app():
         return jsonify({"deleted": did})
 
     # ── Generation ──────────────────────────────────────────────────────────
+    # Document ingestion. This subsystem is independent from hypothesis generation.
+    @app.get("/api/projects/<int:pid>/documents")
+    def list_documents(pid):
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Project not found"}), 404
+        rows = p.documents.order_by(SourceDocument.created_at.desc()).all()
+        return jsonify([document.to_dict(with_raw_text=False) for document in rows])
+
+    @app.post("/api/projects/<int:pid>/documents")
+    def upload_document(pid):
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Project not found"}), 404
+        try:
+            document = save_upload(pid, request.files.get("file"))
+        except FileTooLargeError as exc:
+            return jsonify({"error": str(exc)}), 413
+        except IngestionError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        parse_run = None
+        if _request_bool("parse", default=False):
+            document, parse_run = parse_ingested_document(document.id)
+
+        payload = {"document": document.to_dict(with_raw_text=False)}
+        if parse_run:
+            payload["parse_run"] = parse_run.to_dict()
+        return jsonify(payload), 201
+
+    @app.get("/api/documents/<int:did>")
+    def get_document(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        return jsonify(document.to_dict(with_raw_text=_request_bool("raw", default=False)))
+
+    @app.post("/api/documents/<int:did>/parse")
+    def parse_document(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        document, parse_run = parse_ingested_document(did)
+        status_code = 200 if parse_run.status == "parsed" else 422
+        return jsonify({
+            "document": document.to_dict(with_raw_text=False),
+            "parse_run": parse_run.to_dict(),
+        }), status_code
+
+    @app.get("/api/documents/<int:did>/chunks")
+    def list_document_chunks(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        limit = _query_int("limit", 100, minimum=1, maximum=500)
+        offset = _query_int("offset", 0, minimum=0)
+        query = document.chunks.order_by(DocumentChunk.chunk_index.asc())
+        return jsonify({
+            "document_id": did,
+            "count": query.count(),
+            "items": [chunk.to_dict() for chunk in query.offset(offset).limit(limit).all()],
+        })
+
+    @app.get("/api/documents/<int:did>/tables")
+    def list_document_tables(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        limit = _query_int("limit", 50, minimum=1, maximum=200)
+        offset = _query_int("offset", 0, minimum=0)
+        query = document.tables.order_by(DocumentTable.id.asc())
+        return jsonify({
+            "document_id": did,
+            "count": query.count(),
+            "items": [table.to_dict() for table in query.offset(offset).limit(limit).all()],
+        })
+
+    @app.get("/api/documents/<int:did>/preview")
+    def preview_document(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        return jsonify(document_preview(document))
+
+    @app.post("/api/documents/<int:did>/review")
+    def review_document_endpoint(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        try:
+            payload = review_document_parse(did)
+        except ProviderUnavailableError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except ParserReviewPreconditionError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify(payload)
+
+    @app.delete("/api/documents/<int:did>")
+    def delete_document_endpoint(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        delete_ingested_document(document)
+        return jsonify({"deleted": did})
+
+    # Generation
     @app.post("/api/projects/<int:pid>/generate")
     def generate(pid):
         """Сгенерировать гипотезы через RAG+reranker.
