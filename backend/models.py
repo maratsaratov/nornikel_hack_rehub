@@ -109,14 +109,14 @@ class KnowledgeSource(db.Model):
 
 
 class SourceDocument(db.Model):
-    """Uploaded source file parsed by the standalone ingestion subsystem."""
+    """Uploaded source file parsed by the deterministic ingestion subsystem."""
     __tablename__ = "source_documents"
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id"), nullable=False)
     filename = db.Column(db.String(500), nullable=False)
     stored_path = db.Column(db.String(1000), nullable=False)
     file_type = db.Column(db.String(40), nullable=False)
-    parse_status = db.Column(db.String(40), default="uploaded")  # uploaded|parsed|failed|unsupported
+    parse_status = db.Column(db.String(40), default="uploaded")
     metadata_json = db.Column(db.JSON)
     raw_text = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -221,7 +221,12 @@ class GenerationRun(db.Model):
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id"), nullable=False)
     model = db.Column(db.String(120))
     weights = db.Column(db.JSON)             # веса, применённые на момент генерации
-    retrieved = db.Column(db.JSON)           # [{source_id, title, score, terms}]
+    weight_mode = db.Column(db.String(20))   # expert | model | default
+    weight_rationale = db.Column(db.Text)    # обоснование весов (если предложены моделью)
+    topic = db.Column(db.String(400))        # свободная тема запроса (если задана)
+    retrieved = db.Column(db.JSON)           # финальный контекст: [{source_id, title, bm25, dense, hybrid, rerank, terms, lang}]
+    stages = db.Column(db.JSON)              # этапы RAG: {passages, candidates, reranked, rerank_model}
+    rerank_usage = db.Column(db.JSON)        # стоимость реранкера
     n_requested = db.Column(db.Integer)
     prompt_preview = db.Column(db.Text)      # что реально ушло в модель (прозрачность)
     usage = db.Column(db.JSON)               # токены / стоимость
@@ -236,7 +241,12 @@ class GenerationRun(db.Model):
             "project_id": self.project_id,
             "model": self.model,
             "weights": self.weights,
+            "weight_mode": self.weight_mode,
+            "weight_rationale": self.weight_rationale,
+            "topic": self.topic,
             "retrieved": self.retrieved,
+            "stages": self.stages,
+            "rerank_usage": self.rerank_usage,
             "n_requested": self.n_requested,
             "prompt_preview": self.prompt_preview,
             "usage": self.usage,
@@ -252,6 +262,7 @@ class Hypothesis(db.Model):
     run_id = db.Column(db.Integer, db.ForeignKey("generation_runs.id"))
 
     statement = db.Column(db.Text, nullable=False)   # формулировка гипотезы
+    goal_link = db.Column(db.Text)                   # связь с целью проекта (KPI)
     rationale = db.Column(db.Text)                   # научное обоснование
     mechanism = db.Column(db.Text)                   # предполагаемый механизм
     validation = db.Column(db.Text)                  # как проверить (эксперимент)
@@ -295,6 +306,7 @@ class Hypothesis(db.Model):
             "project_id": self.project_id,
             "run_id": self.run_id,
             "statement": self.statement,
+            "goal_link": self.goal_link,
             "rationale": self.rationale,
             "mechanism": self.mechanism,
             "validation": self.validation,

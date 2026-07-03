@@ -1,16 +1,20 @@
 """Ядро «Фабрики гипотез»: генерация и ранжирование.
 
-Пайплайн (полностью прозрачный, каждый шаг логируется в GenerationRun):
-  1. TF-IDF отбирает релевантные источники под KPI  (retrieval.py)
-  2. Промпт с пронумерованными источниками уходит в модель  (prompts.py, llm.py)
-  3. Модель возвращает гипотезы с покомпонентными оценками и ссылками на источники
-  4. Итоговый ранг считается прозрачной формулой composite_score (models.py)
+Пайплайн (прозрачный, каждый этап логируется в GenerationRun):
+  1. RAG: chunking → BM25 отбор кандидатов (мультиязычно) → реранкер (rag.py)
+  2. Веса ранжирования: заданы экспертом ИЛИ предложены моделью (suggest_weights)
+  3. Промпт с пронумерованными источниками уходит в DeepSeek (prompts.py, llm.py)
+  4. Модель возвращает гипотезы с покомпонентными оценками и ссылками на источники
+  5. Итоговый ранг — прозрачная формула composite_score (models.py)
 """
 from db import db
-from models import Project, KnowledgeSource, Hypothesis, GenerationRun, composite_score, DEFAULT_WEIGHTS
-from retrieval import retrieve
-from prompts import build_generation_prompt
+from models import Project, Hypothesis, GenerationRun, composite_score, DEFAULT_WEIGHTS
+import rag
+from prompts import build_generation_prompt, build_weight_prompt
 from llm import complete_json
+from config import Config
+
+_AXES = ("novelty", "value", "feasibility", "risk")
 
 
 def _clamp(x, lo=0, hi=100):
@@ -20,46 +24,92 @@ def _clamp(x, lo=0, hi=100):
         return 0.0
 
 
-def _build_retrieval_query(project: Project) -> str:
+def _normalize_weights(w) -> dict:
+    w = {k: max(0.0, float((w or {}).get(k, 0) or 0)) for k in _AXES}
+    s = sum(w.values())
+    if s <= 0:
+        return dict(DEFAULT_WEIGHTS)
+    return {k: round(v / s, 3) for k, v in w.items()}
+
+
+def _build_query(project: Project, topic: str = None) -> str:
+    if (topic or "").strip():
+        # тема — главный фокус, цель добавляем как контекст
+        return " ".join(filter(None, [topic, project.kpi_target, project.kpi_metric, project.domain]))
     return " ".join(filter(None, [
         project.kpi_target, project.kpi_metric, project.domain, project.constraints,
     ]))
 
 
-def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: dict = None):
-    """Сгенерировать n гипотез для проекта. Возвращает (run_dict, [hypothesis_dict])."""
+def suggest_weights(project_id: int) -> dict:
+    """Модель предлагает веса ранжирования под конкретный проект/стадию."""
+    project = db.session.get(Project, project_id)
+    if not project:
+        raise ValueError("Проект не найден")
+    system, user = build_weight_prompt(project)
+    data, usage = complete_json(system, user, max_tokens=1800)
+    return {
+        "weights": _normalize_weights(data.get("weights")),
+        "rationale": data.get("rationale"),
+        "notes": data.get("notes") or {},
+        "usage": usage,
+        "mode": "model",
+    }
+
+
+def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: dict = None,
+                        weight_mode: str = "expert", topic: str = None,
+                        use_rerank: bool = True, candidate_pool: int = None):
+    """Сгенерировать n гипотез. Возвращает (run_dict, [hypothesis_dict])."""
     project = db.session.get(Project, project_id)
     if not project:
         raise ValueError("Проект не найден")
 
-    weights = {**DEFAULT_WEIGHTS, **(weights or {})}
+    # ── Веса: модель / эксперт / по умолчанию ────────────────────────────────
+    weight_rationale = None
+    if weight_mode == "model":
+        sug = suggest_weights(project_id)
+        weights, weight_rationale = sug["weights"], sug["rationale"]
+    elif weights:
+        weight_mode = "expert"
+    else:
+        weights, weight_mode = dict(DEFAULT_WEIGHTS), "default"
+    weights = _normalize_weights(weights)
+
     sources = project.sources.all()
+    query = _build_query(project, topic)
 
-    # 1. Прозрачный отбор источников
-    retrieved = retrieve(_build_retrieval_query(project), sources, top_k=top_k)
+    # ── 1. RAG: TF-IDF → реранкер ────────────────────────────────────────────
+    rag_out = rag.retrieve(query, sources, top_k=top_k, candidates=candidate_pool, use_rerank=use_rerank)
+    items = rag_out["items"]
+    src_by_id = {it["source"].id: it["source"] for it in items}
     retrieved_log = [{
-        "source_id": item["source"].id,
-        "title": item["source"].title,
-        "type": item["source"].source_type,
-        "score": item["score"],
-        "terms": item["terms"],
-    } for item in retrieved]
+        "source_id": it["source"].id,
+        "title": it["source"].title,
+        "type": it["source"].source_type,
+        "origin": getattr(it["source"], "origin", None),
+        "bm25_score": it["bm25_score"],
+        "dense_score": it.get("dense_score"),
+        "hybrid_score": it.get("hybrid_score"),
+        "rerank_score": it["rerank_score"],
+        "score": it["score"],
+        "terms": it["terms"],
+        "lang": it.get("lang"),
+    } for it in items]
 
-    # 2. Промпт
-    system, user, id_map = build_generation_prompt(project, retrieved, n)
+    # ── 2. Промпт ────────────────────────────────────────────────────────────
+    system, user, id_map = build_generation_prompt(project, items, n, topic=topic)
 
     run = GenerationRun(
-        project_id=project.id,
-        model=None,
-        weights=weights,
-        retrieved=retrieved_log,
-        n_requested=n,
-        prompt_preview=user[:6000],
+        project_id=project.id, model=None, weights=weights,
+        weight_mode=weight_mode, weight_rationale=weight_rationale, topic=(topic or None),
+        retrieved=retrieved_log, stages=rag_out["stages"], rerank_usage=rag_out["rerank_usage"],
+        n_requested=n, prompt_preview=user[:6000],
     )
     db.session.add(run)
-    db.session.flush()  # получить run.id
+    db.session.flush()
 
-    # 3. Вызов модели
+    # ── 3. Генерация ─────────────────────────────────────────────────────────
     try:
         data, usage = complete_json(system, user)
     except Exception as e:  # noqa
@@ -67,7 +117,6 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         db.session.commit()
         raise RuntimeError(run.error)
 
-    from config import Config
     run.model = Config.OPENAI_MODEL
     run.usage = usage
 
@@ -77,18 +126,12 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
 
     created = []
     for item in raw_list:
-        scores = {
-            "novelty": _clamp(item.get("novelty")),
-            "value": _clamp(item.get("value")),
-            "feasibility": _clamp(item.get("feasibility")),
-            "risk": _clamp(item.get("risk")),
-        }
-        # Сопоставляем evidence-ссылки [S1] -> реальный source.id
+        scores = {k: _clamp(item.get(k)) for k in _AXES}
         evidence = []
         for ev in (item.get("evidence") or []):
             sid = str(ev.get("source_id", "")).strip().upper().lstrip("[").rstrip("]")
             real_id = id_map.get(sid)
-            src = next((r["source"] for r in retrieved if r["source"].id == real_id), None)
+            src = src_by_id.get(real_id)
             evidence.append({
                 "source_id": real_id,
                 "title": src.title if src else ev.get("title"),
@@ -97,9 +140,9 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
             })
 
         h = Hypothesis(
-            project_id=project.id,
-            run_id=run.id,
+            project_id=project.id, run_id=run.id,
             statement=(item.get("statement") or "").strip(),
+            goal_link=item.get("goal_link"),
             rationale=item.get("rationale"),
             mechanism=item.get("mechanism"),
             validation=item.get("validation"),
@@ -108,8 +151,7 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
             value=scores["value"], value_rationale=item.get("value_rationale"),
             feasibility=scores["feasibility"], feasibility_rationale=item.get("feasibility_rationale"),
             risk=scores["risk"], risk_rationale=item.get("risk_rationale"),
-            evidence=evidence,
-            status="proposed",
+            evidence=evidence, status="proposed",
         )
         if h.statement:
             db.session.add(h)
@@ -117,6 +159,6 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
 
     db.session.commit()
 
-    # 4. Прозрачное ранжирование
+    # ── 4. Прозрачное ранжирование ───────────────────────────────────────────
     created.sort(key=lambda x: composite_score(x.effective_scores(), weights), reverse=True)
     return run.to_dict(), [h.to_dict(weights) for h in created]

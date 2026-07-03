@@ -577,6 +577,132 @@
   line-height: 1.45;
 }
 
+.sb-empty {
+  color: #8b909b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hypothesis-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.hypothesis-modal__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.hypothesis-modal__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hypothesis-modal__tags span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #2f72d5;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.hypothesis-modal__lead h3 {
+  color: #17191f;
+  font-size: 24px;
+  line-height: 1.3;
+}
+
+.hypothesis-modal__lead p {
+  margin-top: 10px;
+  color: #737985;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.hypothesis-modal__scores {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.hypothesis-modal__score {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafbfd;
+}
+
+.hypothesis-modal__score span {
+  display: block;
+  margin-bottom: 8px;
+  color: #7b808a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hypothesis-modal__score strong {
+  color: #17191f;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.hypothesis-modal__section {
+  display: grid;
+  gap: 10px;
+}
+
+.hypothesis-modal__section h4 {
+  color: #17191f;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.hypothesis-modal__section p {
+  color: #5e6571;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.hypothesis-modal__rationales,
+.hypothesis-modal__evidence {
+  display: grid;
+  gap: 12px;
+}
+
+.hypothesis-modal__rationale,
+.hypothesis-modal__evidence-item {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.hypothesis-modal__rationale strong,
+.hypothesis-modal__evidence-item strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #1f232b;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.hypothesis-modal__evidence-item span {
+  display: block;
+  margin-top: 8px;
+  color: #7f8591;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 @media (max-width: 1180px) {
   .gen-layout {
     grid-template-columns: 1fr;
@@ -613,7 +739,8 @@
 
 @media (max-width: 620px) {
   .weights-grid,
-  .card-meters {
+  .card-meters,
+  .hypothesis-modal__scores {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

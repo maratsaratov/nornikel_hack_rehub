@@ -23,6 +23,12 @@ const CARD_METRICS = [
   { novelty: 'Средняя', value: 9 },
 ]
 
+const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt']
+const MAX_DOCUMENT_UPLOAD_MB = 25
+const EMPTY_OPENALEX_RESULTS = { query: '', local: [], external: [], external_error: null }
+const MIN_OPENALEX_QUERY_LENGTH = 2
+const OPENALEX_SEARCH_DEBOUNCE_MS = 320
+
 function compactText(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ')
   if (value === null || value === undefined) return ''
@@ -66,6 +72,58 @@ function sourceSummary(source) {
 
 function sourceAuthor(source) {
   return compactText(source?.authors || source?.metadata?.authors || source?.origin || 'Внутренняя база')
+}
+
+function fileExtension(filename) {
+  const parts = String(filename || '').toLowerCase().split('.')
+  return parts.length > 1 ? parts.pop() : ''
+}
+
+function openAlexTitle(item) {
+  return compactText(item?.title || item?.display_name) || 'Без названия'
+}
+
+function openAlexResultKey(item, prefix = 'external') {
+  return compactText(
+    item?.openalex_id
+      || item?.external_id
+      || item?.id
+      || item?.doi
+      || `${prefix}-${openAlexTitle(item)}`,
+  )
+}
+
+function openAlexMeta(item) {
+  const authors = Array.isArray(item?.authors)
+    ? item.authors.filter(Boolean).join(', ')
+    : item?.authors
+
+  return [
+    compactText(authors),
+    compactText(item?.year || item?.publication_year || item?.metadata?.year),
+    compactText(item?.reference || item?.doi),
+  ].filter(Boolean).join(' · ')
+}
+
+function openAlexDescription(item) {
+  return clipped(
+    item?.abstract
+      || item?.description
+      || item?.content
+      || item?.excerpt
+      || item?.raw_text_preview,
+    140,
+  )
+}
+
+function buildOpenAlexResults(query, payload = {}) {
+  return {
+    ...EMPTY_OPENALEX_RESULTS,
+    ...payload,
+    query: payload?.query || query,
+    local: payload?.local || [],
+    external: payload?.external || [],
+  }
 }
 
 function makeItems(sources, documents) {
@@ -235,6 +293,8 @@ function KnowledgeCard({ item, selected, onToggle, onDeleteDocument }) {
 export default function KnowledgePanel({
   sources,
   documents = [],
+  documentTypes = ACCEPTED_DOCUMENT_EXTENSIONS,
+  maxUploadMb = MAX_DOCUMENT_UPLOAD_MB,
   onSearch,
   onImportOpenAlex,
   onUploadDocument,
@@ -243,6 +303,9 @@ export default function KnowledgePanel({
   const [query, setQuery] = useState('')
   const [doi, setDoi] = useState('')
   const [doiStatus, setDoiStatus] = useState('')
+  const [openAlexResults, setOpenAlexResults] = useState(EMPTY_OPENALEX_RESULTS)
+  const [searchingOpenAlex, setSearchingOpenAlex] = useState(false)
+  const [importingOpenAlexKey, setImportingOpenAlexKey] = useState('')
   const [uploadStatus, setUploadStatus] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -260,6 +323,19 @@ export default function KnowledgePanel({
   })
   const fileInputRef = useRef(null)
   const selectedOnceRef = useRef(false)
+  const openAlexRequestRef = useRef(0)
+  const acceptedDocumentExtensions = useMemo(() => {
+    const normalized = (documentTypes || [])
+      .map((ext) => String(ext || '').toLowerCase().replace(/^\./, ''))
+      .filter(Boolean)
+    return normalized.length ? normalized : ACCEPTED_DOCUMENT_EXTENSIONS
+  }, [documentTypes])
+  const acceptedDocuments = useMemo(
+    () => acceptedDocumentExtensions.map((ext) => `.${ext}`).join(','),
+    [acceptedDocumentExtensions],
+  )
+  const maxDocumentUploadMb = Number(maxUploadMb) > 0 ? Number(maxUploadMb) : MAX_DOCUMENT_UPLOAD_MB
+  const maxDocumentUploadBytes = maxDocumentUploadMb * 1024 * 1024
 
   const libraryItems = useMemo(() => makeItems(sources, documents), [sources, documents])
   const filterCounts = useMemo(() => {
@@ -272,6 +348,124 @@ export default function KnowledgePanel({
       2025: 0,
       2024: 0,
       earlier: 0,
+    }
+
+    libraryItems.forEach((item) => {
+      counts[item.type] = (counts[item.type] || 0) + 1
+      counts[item.yearKey] = (counts[item.yearKey] || 0) + 1
+    })
+
+    return counts
+  }, [libraryItems])
+
+  useEffect(() => {
+    if (selectedOnceRef.current || libraryItems.length === 0) return
+    selectedOnceRef.current = true
+    setSelectedIds(new Set([libraryItems[0].id]))
+  }, [libraryItems])
+
+  useEffect(() => {
+    const term = doi.trim()
+    if (!term || term.length < MIN_OPENALEX_QUERY_LENGTH || !onSearch) {
+      setSearchingOpenAlex(false)
+      setOpenAlexResults(EMPTY_OPENALEX_RESULTS)
+      return undefined
+    }
+
+    const requestId = openAlexRequestRef.current + 1
+    openAlexRequestRef.current = requestId
+
+    const timerId = window.setTimeout(async () => {
+      setSearchingOpenAlex(true)
+      try {
+        const results = await onSearch(term)
+        if (openAlexRequestRef.current !== requestId) return
+        setOpenAlexResults(buildOpenAlexResults(term, results))
+      } catch (error) {
+        if (openAlexRequestRef.current !== requestId) return
+        setOpenAlexResults(buildOpenAlexResults(term, { external_error: error.message }))
+      } finally {
+        if (openAlexRequestRef.current === requestId) {
+          setSearchingOpenAlex(false)
+        }
+      }
+    }, OPENALEX_SEARCH_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(timerId)
+  }, [doi, onSearch])
+
+  const filteredItems = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return libraryItems.filter((item) => {
+      const matchesType = Boolean(typeFilters[item.type])
+      const matchesYear = Boolean(yearFilters[item.yearKey])
+      const matchesQuery = !needle
+        || item.title.toLowerCase().includes(needle)
+        || item.summary.toLowerCase().includes(needle)
+      return matchesType && matchesYear && matchesQuery
+    })
+  }, [libraryItems, query, typeFilters, yearFilters])
+
+  const selectedVisibleCount = filteredItems.filter((item) => selectedIds.has(item.id)).length
+
+  function toggleSelection(itemId) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }
+
+  function selectAllVisible() {
+    // TODO: сохранить выбранные источники на backend, когда появится сущность набора источников для генерации.
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      filteredItems.forEach((item) => next.add(item.id))
+      return next
+    })
+  }
+
+  async function handleFile(file) {
+    if (!file || !onUploadDocument) return
+    const extension = fileExtension(file.name)
+    if (!acceptedDocumentExtensions.includes(extension)) {
+      setUploadStatus(`Unsupported file type: .${extension || 'unknown'}`)
+      return
+    }
+    if (file.size > maxDocumentUploadBytes) {
+      setUploadStatus(`File exceeds ${maxDocumentUploadMb} MB limit`)
+      return
+    }
+    setUploadStatus(`Uploading: ${file.name}`)
+    try {
+      await onUploadDocument(file)
+      setUploadStatus(`${file.name} uploaded`)
+    } catch (error) {
+      setUploadStatus(error.message)
+    }
+  })
+
+  async function importOpenAlexResult(item) {
+    if (!item || !onImportOpenAlex) return
+    if (item?.already_added) {
+      setDoiStatus('Источник уже есть в библиотеке')
+      return
+    }
+  })
+
+    const itemKey = openAlexResultKey(item)
+    setImportingOpenAlexKey(itemKey)
+    setDoiStatus('Добавляем источник...')
+    try {
+      await onImportOpenAlex(item)
+      setDoi('')
+      setOpenAlexResults(EMPTY_OPENALEX_RESULTS)
+      setDoiStatus('Ссылка добавлена')
+    } catch (error) {
+      setDoiStatus(error.message)
+    } finally {
+      setImportingOpenAlexKey('')
     }
 
     libraryItems.forEach((item) => {
@@ -311,42 +505,22 @@ export default function KnowledgePanel({
     })
   }
 
-  function selectAllVisible() {
-    // TODO: сохранить выбранные источники на backend, когда появится сущность набора источников для генерации.
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      filteredItems.forEach((item) => next.add(item.id))
-      return next
-    })
-  }
-
-  async function handleFile(file) {
-    if (!file || !onUploadDocument) return
-    setUploadStatus(`Загрузка: ${file.name}`)
-    try {
-      // TODO: реализовать backend-распаковку ZIP; сейчас ZIP оставлен в UI по макету и будет помечен как unsupported.
-      await onUploadDocument(file)
-      setUploadStatus(`${file.name} загружен`)
-    } catch (error) {
-      setUploadStatus(error.message)
-    }
-  }
-
   async function addDoi() {
     const value = doi.trim()
     if (!value || !onSearch || !onImportOpenAlex) return
     setDoiStatus('Ищем источник...')
     try {
       // TODO: заменить поиск OpenAlex прямым backend-резолвером DOI/URL, когда он появится.
-      const results = await onSearch(value)
-      const firstExternal = results.external?.[0]
+      const results = openAlexResults.query === value
+        ? openAlexResults
+        : buildOpenAlexResults(value, await onSearch(value))
+      setOpenAlexResults(results)
+      const firstExternal = results.external?.find((item) => !item?.already_added) || results.external?.[0]
       if (!firstExternal) {
         setDoiStatus(results.external_error || 'Источник не найден')
         return
       }
-      await onImportOpenAlex(firstExternal)
-      setDoi('')
-      setDoiStatus('Ссылка добавлена')
+      await importOpenAlexResult(firstExternal)
     } catch (error) {
       setDoiStatus(error.message)
     }
@@ -366,7 +540,7 @@ export default function KnowledgePanel({
       <section className="import-block">
         <div className="import-block__heading">
           <h2>Импорт данных</h2>
-          <span>Поддерживаемые форматы: PDF, XLSX, ZIP</span>
+          <span>Поддерживаемые форматы: {acceptedDocumentExtensions.map((ext) => ext.toUpperCase()).join(', ')}</span>
         </div>
 
         <div className="import-grid">
@@ -387,35 +561,102 @@ export default function KnowledgePanel({
           >
             <span className="file-drop__icon"><Icon name="upload" /></span>
             <strong>Перетащите файлы сюда или выберите на диске</strong>
-            <small>{uploadStatus || 'Максимальный размер файла: 50MB. Поддерживаются: PDF, XLSX, ZIP'}</small>
+            <small>{uploadStatus || `Максимальный размер файла: ${maxDocumentUploadMb} MB. Поддерживаются: ${acceptedDocumentExtensions.map((ext) => ext.toUpperCase()).join(', ')}`}</small>
           </button>
           <input
             ref={fileInputRef}
             className="visually-hidden"
             type="file"
-            accept=".pdf,.xlsx,.zip,.docx,.csv,.txt"
-            onChange={(event) => handleFile(event.target.files?.[0])}
+            accept={acceptedDocuments}
+            onChange={(event) => {
+              handleFile(event.target.files?.[0])
+              event.target.value = ''
+            }}
           />
 
           <aside className="doi-card">
             <div className="doi-card__title">
               <Icon name="link" />
-              <h3>DOI или URL статьи</h3>
+              <h3>DOI, URL или название статьи</h3>
             </div>
             <input
               type="text"
               value={doi}
-              onChange={(event) => setDoi(event.target.value)}
+              onChange={(event) => {
+                setDoi(event.target.value)
+                setDoiStatus('')
+              }}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') addDoi()
               }}
-              placeholder="10.1038/s41586-020..."
+              placeholder="10.1038/s41586-020... или запрос к OpenAlex"
             />
-            <button type="button" onClick={addDoi}>
+            <button
+              className="doi-card__action"
+              type="button"
+              onClick={addDoi}
+              disabled={!doi.trim() || importingOpenAlexKey !== ''}
+            >
               <Icon name="plus" />
               Добавить ссылку
             </button>
-            {doiStatus && <p>{doiStatus}</p>}
+            {doiStatus && <p className="doi-card__status">{doiStatus}</p>}
+
+            {doi.trim().length >= MIN_OPENALEX_QUERY_LENGTH && (
+              <div className="doi-suggestions">
+                <div className="doi-suggestions__head">
+                  <span>Варианты OpenAlex</span>
+                  <small>
+                    {searchingOpenAlex
+                      ? 'Ищем...'
+                      : openAlexResults.external.length > 0
+                        ? `${openAlexResults.external.length} найдено`
+                        : 'Без совпадений'}
+                  </small>
+                </div>
+
+                {openAlexResults.local.length > 0 && (
+                  <p className="doi-suggestions__hint">
+                    Уже в проекте найдено совпадений: {openAlexResults.local.length}
+                  </p>
+                )}
+
+                {openAlexResults.external.map((item) => {
+                  const itemKey = openAlexResultKey(item)
+                  const meta = openAlexMeta(item)
+                  const description = openAlexDescription(item)
+
+                  return (
+                    <button
+                      key={itemKey}
+                      className={`doi-suggestion ${item?.already_added ? 'doi-suggestion--added' : ''}`}
+                      type="button"
+                      onClick={() => importOpenAlexResult(item)}
+                      disabled={item?.already_added || importingOpenAlexKey === itemKey}
+                    >
+                      <div className="doi-suggestion__copy">
+                        <strong>{openAlexTitle(item)}</strong>
+                        {meta && <span>{meta}</span>}
+                        {description && <small>{description}</small>}
+                      </div>
+                      <em>
+                        {importingOpenAlexKey === itemKey
+                          ? 'Импорт...'
+                          : item?.already_added
+                            ? 'Уже в библиотеке'
+                            : 'Добавить'}
+                      </em>
+                    </button>
+                  )
+                })}
+
+                {!searchingOpenAlex && openAlexResults.query && openAlexResults.external.length === 0 && (
+                  <div className="doi-suggestions__empty">
+                    {openAlexResults.external_error || 'По этому запросу OpenAlex пока ничего не вернул.'}
+                  </div>
+                )}
+              </div>
+            )}
           </aside>
         </div>
       </section>
