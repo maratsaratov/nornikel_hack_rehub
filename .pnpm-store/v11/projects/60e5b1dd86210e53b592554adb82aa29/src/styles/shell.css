@@ -1,0 +1,147 @@
+.knowledge-app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: rgba(255, 255, 255, 0.97);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(16px);
+}
+
+.topbar__inner {
+  width: min(100% - 56px, 1240px);
+  min-height: 78px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 30px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.brand__mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: #1e2229;
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.topnav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+  min-width: 0;
+}
+
+.topnav a {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #61646d;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.topnav a.is-active,
+.topnav a:hover {
+  color: #2c2e35;
+}
+
+.project-switcher {
+  width: 228px;
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px 0 13px;
+  background: #f9fafc;
+}
+
+.project-switcher > span:first-child {
+  color: #7f8590;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.project-switcher select,
+.project-switcher button {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: #2c2e35;
+  font-size: 13px;
+  font-weight: 800;
+  outline: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none; 
+}
+
+.project-switcher__arrow {
+  color: #9aa0aa;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.avatar-button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #e6e6e8;
+  border-radius: 50%;
+  display: grid;
+  place-items: end center;
+  padding: 0 0 4px;
+  background:
+    radial-gradient(circle at 50% 26%, #edc8ad 0 19%, transparent 20%),
+    linear-gradient(135deg, #9e5f42 0 45%, #223142 46% 100%);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  overflow: hidden;
+}
+
+.ui-icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+}
+
+main {
+  flex: 1;
+}
+
