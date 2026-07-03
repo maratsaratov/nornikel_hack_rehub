@@ -1,14 +1,21 @@
 import React, { useState } from 'react'
 import { Modal, Field, TYPE_LABEL } from './ui.jsx'
 
-const EMPTY = { title: '', content: '', source_type: 'literature', authors: '', year: '', reference: '' }
+const EMPTY = {
+  title: '',
+  content: '',
+  source_type: 'literature',
+  authors: '',
+  year: '',
+  reference: '',
+}
 
 export default function KnowledgePanel({ sources, onAdd, onDelete }) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
 
-  const upd = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+  const updateField = (key) => (e) => setForm({ ...form, [key]: e.target.value })
 
   async function submit() {
     if (!form.title.trim() || !form.content.trim()) return
@@ -28,30 +35,38 @@ export default function KnowledgePanel({ sources, onAdd, onDelete }) {
         <h3>База знаний</h3>
         <span className="count">{sources.length}</span>
         <div className="spacer" />
-        <button className="btn sm" onClick={() => setOpen(true)}>+ Источник</button>
+        <button className="btn primary" onClick={() => setOpen(true)}>
+          Добавить источник
+        </button>
       </div>
-      <div className="card-body" style={{ paddingTop: 4, paddingBottom: 4 }}>
+
+      <div className="card-body knowledge-panel">
         {sources.length === 0 && (
-          <p className="section-hint" style={{ padding: '10px 0' }}>
-            Добавьте литературу, отчёты и эксперименты — на их основе будут строиться гипотезы.
+          <p className="section-hint">
+            Добавьте статьи, отчёты и экспериментальные заметки. Эти материалы станут основой retrieval и объяснений для гипотез.
           </p>
         )}
+
         {sources.map((s) => (
-          <div className="source" key={s.id}>
+          <article className="source" key={s.id}>
             <div className="s-top">
               <span className={`type-tag type-${s.source_type}`}>{TYPE_LABEL[s.source_type] || s.source_type}</span>
               <span className="s-title">{s.title}</span>
-              <button className="btn ghost sm danger" title="Удалить" onClick={() => onDelete(s.id)}>✕</button>
+              <button className="btn secondary btn-compact" title="Удалить источник" onClick={() => onDelete(s.id)}>
+                Удалить
+              </button>
             </div>
+
             <div className="s-excerpt">
               {(s.authors || s.year) && (
-                <b style={{ color: 'var(--ink-soft)' }}>
-                  {[s.authors, s.year].filter(Boolean).join(', ')} —{' '}
+                <b>
+                  {[s.authors, s.year].filter(Boolean).join(', ')}
+                  {'. '}
                 </b>
               )}
               {s.excerpt}
             </div>
-          </div>
+          </article>
         ))}
       </div>
 
@@ -59,40 +74,46 @@ export default function KnowledgePanel({ sources, onAdd, onDelete }) {
         <Modal
           title="Новый источник знаний"
           onClose={() => setOpen(false)}
-          footer={
+          footer={(
             <>
-              <button className="btn" onClick={() => setOpen(false)}>Отмена</button>
+              <button className="btn secondary" onClick={() => setOpen(false)}>
+                Отмена
+              </button>
               <button className="btn primary" disabled={saving} onClick={submit}>
                 {saving ? 'Сохранение…' : 'Добавить'}
               </button>
             </>
-          }
+          )}
         >
           <Field label="Тип источника">
-            <select value={form.source_type} onChange={upd('source_type')}>
+            <select value={form.source_type} onChange={updateField('source_type')}>
               <option value="literature">Литература / статья</option>
               <option value="report">Внутренний отчёт</option>
               <option value="experiment">Эксперимент / лаб. данные</option>
             </select>
           </Field>
+
           <Field label="Заголовок *">
-            <input value={form.title} onChange={upd('title')} placeholder="Название статьи / отчёта" />
+            <input value={form.title} onChange={updateField('title')} placeholder="Название статьи или отчёта" />
           </Field>
+
           <div className="row">
             <Field label="Авторы / подразделение">
-              <input value={form.authors} onChange={upd('authors')} placeholder="Petrov et al." />
+              <input value={form.authors} onChange={updateField('authors')} placeholder="Petrov et al." />
             </Field>
             <Field label="Год">
-              <input value={form.year} onChange={upd('year')} placeholder="2023" className="num-input" />
+              <input value={form.year} onChange={updateField('year')} placeholder="2025" className="num-input" />
             </Field>
           </div>
-          <Field label="Ссылка / DOI / инв. номер">
-            <input value={form.reference} onChange={upd('reference')} placeholder="DOI, ссылка или № отчёта" />
+
+          <Field label="Ссылка / DOI / инвентарный номер">
+            <input value={form.reference} onChange={updateField('reference')} placeholder="DOI, ссылка или номер отчёта" />
           </Field>
+
           <Field label="Содержание / аннотация *">
             <textarea
               value={form.content}
-              onChange={upd('content')}
+              onChange={updateField('content')}
               rows={7}
               placeholder="Вставьте текст, аннотацию или ключевые выводы источника…"
             />
