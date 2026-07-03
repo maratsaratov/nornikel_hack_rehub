@@ -16,15 +16,6 @@ async function req(url, opts = {}) {
 
 const body = (b) => ({ headers: JSON_HEADERS, body: JSON.stringify(b) })
 
-const uploadBody = (file, fields = {}) => {
-  const form = new FormData()
-  form.append('file', file)
-  Object.entries(fields).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) form.append(key, value)
-  })
-  return { body: form }
-}
-
 export const api = {
   config: () => req('/api/config'),
   health: () => req('/api/health'),
@@ -36,14 +27,8 @@ export const api = {
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
 
   listSources: (id) => req(`/api/projects/${id}/sources`),
-  searchSources: (id, q, limit = 6) => req(`/api/projects/${id}/sources/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   addSource: (id, b) => req(`/api/projects/${id}/sources`, { method: 'POST', ...body(b) }),
-  importOpenAlexSource: (id, b) => req(`/api/projects/${id}/sources/import-openalex`, { method: 'POST', ...body(b) }),
   deleteSource: (id) => req(`/api/sources/${id}`, { method: 'DELETE' }),
-
-  listDocuments: (id) => req(`/api/projects/${id}/documents`),
-  uploadDocument: (id, file, parse = true) => req(`/api/projects/${id}/documents?parse=${parse ? 'true' : 'false'}`, { method: 'POST', ...uploadBody(file) }),
-  deleteDocument: (id) => req(`/api/documents/${id}`, { method: 'DELETE' }),
 
   generate: (id, b) => req(`/api/projects/${id}/generate`, { method: 'POST', ...body(b) }),
   listHypotheses: (id) => req(`/api/projects/${id}/hypotheses`),
