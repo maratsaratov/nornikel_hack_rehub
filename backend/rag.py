@@ -1,21 +1,21 @@
 """Качественный двухэтапный RAG.
 
     источники → пассажи (chunking)
-             → этап 1: TF-IDF отбирает N кандидатов  (быстрый дешёвый фильтр)
+             → этап 1: BM25 (Okapi) отбирает N кандидатов  (быстрый дешёвый фильтр)
              → этап 2: реранкер cohere/rerank-4-fast переупорядочивает по релевантности
              → диверсификация: лучший пассаж на источник, топ-K источников
 
-Почему так: TF-IDF дёшев, но грубоват; кросс-энкодер точен, но дорог на больших
-корпусах. Связка «дешёвый отбор → точный реранк» — это классический production-RAG
-паттерн: экономно (реранкер видит только N кандидатов) и качественно.
-Каждый этап логируется -> полная прозрачность (не «чёрный ящик»).
-"""
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+Почему так: BM25 дёшев, но лексичен (не видит смысл и плохо связывает языки);
+кросс-энкодер точен и мультиязычен, но дорог на больших корпусах. Связка
+«дешёвый отбор → точный реранк» — классический production-RAG паттерн.
 
+Мультиязычность: BM25 лексичен, поэтому русский запрос почти не набирает очков на
+англоязычных документах. Чтобы англо- и русскоязычные источники честно сравнил
+МУЛЬТИЯЗЫЧНЫЙ реранкер, на этапе отбора гарантируем минимум кандидатов на каждый
+язык (см. _select_candidates). Каждый этап логируется — полная прозрачность.
+"""
 from config import Config
-from retrieval import _tokenize, RU_STOP
+import bm25
 import reranker
 
 
@@ -55,61 +55,76 @@ def _passages(sources) -> list[dict]:
     return out
 
 
-def _tfidf_rank(query: str, texts: list[str], k: int) -> list[tuple[int, float, list[str]]]:
-    """Топ-k пассажей по TF-IDF: (index, score, совпавшие_термины)."""
-    corpus = texts + [query]
-    try:
-        vec = TfidfVectorizer(
-            tokenizer=_tokenize, token_pattern=None, stop_words=RU_STOP,
-            lowercase=True, min_df=1, ngram_range=(1, 2),
-        )
-        matrix = vec.fit_transform(corpus)
-    except ValueError:
-        return [(i, 0.0, []) for i in range(min(k, len(texts)))]
+def _select_candidates(scored: list[dict], budget: int, min_per_lang: int) -> list[dict]:
+    """Отобрать до `budget` кандидатов, ГАРАНТИРУЯ минимум на каждый язык.
 
-    doc_m, q = matrix[:-1], matrix[-1]
-    sims = cosine_similarity(q, doc_m).ravel()
-    names = np.array(vec.get_feature_names_out())
-    q_arr = q.toarray().ravel()
-    q_idx = set(np.nonzero(q_arr)[0])
+    scored — результат bm25.rank (по исходному порядку). Сначала берём топ
+    min_per_lang по BM25 из каждого языка (чтобы кросс-языковые источники дошли до
+    реранкера), затем добиваем бюджет лучшими по общему счёту. Итог сортируем по счёту.
+    """
+    ranked = sorted(scored, key=lambda x: x["score"], reverse=True)
+    if len(ranked) <= budget:
+        return ranked
 
-    order = np.argsort(sims)[::-1][:k]
-    ranked = []
-    for i in order:
-        d_arr = doc_m[i].toarray().ravel()
-        shared = [j for j in q_idx if d_arr[j] > 0]
-        shared.sort(key=lambda j: d_arr[j] * q_arr[j], reverse=True)
-        ranked.append((int(i), round(float(sims[i]), 4), [str(names[j]) for j in shared[:6]]))
-    return ranked
+    by_lang: dict[str, list] = {}
+    for x in ranked:
+        by_lang.setdefault(x["lang"], []).append(x)
+
+    selected, taken = [], set()
+    # 1) квота на каждый язык
+    for items in by_lang.values():
+        for x in items[:min_per_lang]:
+            if len(selected) >= budget:
+                break
+            if x["index"] not in taken:
+                selected.append(x)
+                taken.add(x["index"])
+    # 2) добить бюджет лучшими по общему счёту
+    for x in ranked:
+        if len(selected) >= budget:
+            break
+        if x["index"] not in taken:
+            selected.append(x)
+            taken.add(x["index"])
+
+    selected.sort(key=lambda x: x["score"], reverse=True)
+    return selected
 
 
-def retrieve(query, sources, top_k=6, candidates=None, use_rerank=True, per_source=1):
+def retrieve(query, sources, top_k=6, candidates=None, use_rerank=True,
+             per_source=1, min_per_lang=None):
     """Двухэтапный отбор контекста под запрос.
 
     Возвращает:
       {
-        "items": [{source, passage, tfidf_score, rerank_score, score, terms}],  # по убыванию
-        "stages": {passages, candidates, reranked, rerank_model},
+        "items": [{source, passage, bm25_score, rerank_score, score, terms, lang}],  # по убыванию
+        "stages": {passages, candidates, reranked, rerank_model, languages},
         "rerank_usage": {...}, "rerank_error": str|None
       }
     """
     candidates = candidates or Config.RERANK_CANDIDATES
+    min_per_lang = Config.RETRIEVAL_MIN_PER_LANG if min_per_lang is None else min_per_lang
     passages = _passages(sources)
-    stages = {"passages": len(passages), "candidates": 0, "reranked": False, "rerank_model": None}
+    stages = {"passages": len(passages), "candidates": 0, "reranked": False,
+              "rerank_model": None, "languages": {}}
     if not passages:
         return {"items": [], "stages": stages, "rerank_usage": {}, "rerank_error": None}
 
-    # ── Этап 1: TF-IDF отбор кандидатов ──────────────────────────────────────
+    # ── Этап 1: BM25 по всем пассажам + языко-сбалансированный отбор кандидатов ─
+    scored = bm25.rank(query, [p["text"] for p in passages], k1=Config.BM25_K1, b=Config.BM25_B)
+    stages["languages"] = _lang_counts(scored)
+    selected = _select_candidates(scored, candidates, min_per_lang)
     cand = []
-    for idx, score, terms in _tfidf_rank(query, [p["text"] for p in passages], candidates):
-        p = passages[idx]
+    for x in selected:
+        p = passages[x["index"]]
         cand.append({
             "source": p["source"], "passage": p["text"],
-            "tfidf_score": score, "rerank_score": None, "terms": terms,
+            "bm25_score": x["score"], "rerank_score": None,
+            "terms": x["terms"], "lang": x["lang"],
         })
     stages["candidates"] = len(cand)
 
-    # ── Этап 2: реранкер ─────────────────────────────────────────────────────
+    # ── Этап 2: мультиязычный реранкер ───────────────────────────────────────
     rerank_usage, rerank_error = {}, None
     if use_rerank and reranker.available() and cand:
         rr = reranker.rerank(query, [c["passage"] for c in cand], top_n=len(cand))
@@ -126,7 +141,7 @@ def retrieve(query, sources, top_k=6, candidates=None, use_rerank=True, per_sour
             rerank_error = rr["error"]
 
     for c in cand:
-        c["score"] = c["rerank_score"] if c["rerank_score"] is not None else c["tfidf_score"]
+        c["score"] = c["rerank_score"] if c["rerank_score"] is not None else c["bm25_score"]
 
     # ── Диверсификация: лучший пассаж на источник, затем top_k источников ─────
     seen, diversified = {}, []
@@ -141,3 +156,10 @@ def retrieve(query, sources, top_k=6, candidates=None, use_rerank=True, per_sour
 
     return {"items": diversified, "stages": stages,
             "rerank_usage": rerank_usage, "rerank_error": rerank_error}
+
+
+def _lang_counts(scored: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for x in scored:
+        counts[x["lang"]] = counts.get(x["lang"], 0) + 1
+    return counts

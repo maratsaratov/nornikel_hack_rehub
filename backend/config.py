@@ -31,9 +31,14 @@ class Config:
     RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "30"))
     RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "24"))  # размер пула 1-го этапа
 
-    # ── RAG (chunking) ───────────────────────────────────────────────────────
+    # ── RAG (chunking + BM25 1-й этап) ───────────────────────────────────────
     RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "900"))       # символов на пассаж
     RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
+    BM25_K1 = float(os.getenv("BM25_K1", "1.5"))                   # насыщение частоты терма
+    BM25_B = float(os.getenv("BM25_B", "0.75"))                    # нормировка по длине
+    # Мультиязычность: минимум кандидатов на каждый язык (RU/EN) в пуле реранкера,
+    # чтобы англо- и русскоязычные источники честно сравнил мультиязычный реранкер.
+    RETRIEVAL_MIN_PER_LANG = int(os.getenv("RETRIEVAL_MIN_PER_LANG", "5"))
 
     # ── Внешние научные источники (умный парсер базы знаний) ─────────────────
     # Активные коннекторы по умолчанию (keyless). Materials Project включается
