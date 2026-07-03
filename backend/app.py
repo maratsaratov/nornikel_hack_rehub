@@ -6,10 +6,27 @@ from sqlalchemy import inspect, or_, text
 
 from config import Config
 from db import db
-from models import Project, KnowledgeSource, Hypothesis, GenerationRun, DEFAULT_WEIGHTS, composite_score
+from models import (
+    Project,
+    KnowledgeSource,
+    Hypothesis,
+    GenerationRun,
+    SourceDocument,
+    DocumentChunk,
+    DocumentTable,
+    DEFAULT_WEIGHTS,
+    composite_score,
+)
 from engine import generate_hypotheses
 import llm
 from openalex import search_works
+from ingestion.service import (
+    IngestionError,
+    delete_document as delete_ingested_document,
+    document_preview,
+    parse_document as parse_ingested_document,
+    save_upload,
+)
 
 
 def _parse_weights(raw):
@@ -87,6 +104,27 @@ def _parse_year(raw):
         return None
 
 
+def _request_bool(name, default=False):
+    value = request.args.get(name)
+    if value is None and request.form:
+        value = request.form.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _query_int(name, default, minimum=None, maximum=None):
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 def _ensure_source_origin_column():
     inspector = inspect(db.engine)
     columns = {column["name"] for column in inspector.get_columns("knowledge_sources")}
@@ -100,6 +138,7 @@ def _ensure_source_origin_column():
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.config["MAX_CONTENT_LENGTH"] = Config.MAX_UPLOAD_MB * 1024 * 1024
     CORS(app)
     db.init_app(app)
 
@@ -317,6 +356,97 @@ def create_app():
         return jsonify({"deleted": sid})
 
     # ── Generation ──────────────────────────────────────────────────────────
+    # Document ingestion. This subsystem is independent from hypothesis generation.
+    @app.get("/api/projects/<int:pid>/documents")
+    def list_documents(pid):
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Project not found"}), 404
+        rows = p.documents.order_by(SourceDocument.created_at.desc()).all()
+        return jsonify([document.to_dict(with_raw_text=False) for document in rows])
+
+    @app.post("/api/projects/<int:pid>/documents")
+    def upload_document(pid):
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Project not found"}), 404
+        try:
+            document = save_upload(pid, request.files.get("file"))
+        except IngestionError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        parse_run = None
+        if _request_bool("parse", default=False):
+            document, parse_run = parse_ingested_document(document.id)
+
+        payload = {"document": document.to_dict(with_raw_text=False)}
+        if parse_run:
+            payload["parse_run"] = parse_run.to_dict()
+        return jsonify(payload), 201
+
+    @app.get("/api/documents/<int:did>")
+    def get_document(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        return jsonify(document.to_dict(with_raw_text=_request_bool("raw", default=False)))
+
+    @app.post("/api/documents/<int:did>/parse")
+    def parse_document(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        document, parse_run = parse_ingested_document(did)
+        status_code = 200 if parse_run.status == "parsed" else 422
+        return jsonify({
+            "document": document.to_dict(with_raw_text=False),
+            "parse_run": parse_run.to_dict(),
+        }), status_code
+
+    @app.get("/api/documents/<int:did>/chunks")
+    def list_document_chunks(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        limit = _query_int("limit", 100, minimum=1, maximum=500)
+        offset = _query_int("offset", 0, minimum=0)
+        query = document.chunks.order_by(DocumentChunk.chunk_index.asc())
+        return jsonify({
+            "document_id": did,
+            "count": query.count(),
+            "items": [chunk.to_dict() for chunk in query.offset(offset).limit(limit).all()],
+        })
+
+    @app.get("/api/documents/<int:did>/tables")
+    def list_document_tables(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        limit = _query_int("limit", 50, minimum=1, maximum=200)
+        offset = _query_int("offset", 0, minimum=0)
+        query = document.tables.order_by(DocumentTable.id.asc())
+        return jsonify({
+            "document_id": did,
+            "count": query.count(),
+            "items": [table.to_dict() for table in query.offset(offset).limit(limit).all()],
+        })
+
+    @app.get("/api/documents/<int:did>/preview")
+    def preview_document(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        return jsonify(document_preview(document))
+
+    @app.delete("/api/documents/<int:did>")
+    def delete_document_endpoint(did):
+        document = db.session.get(SourceDocument, did)
+        if not document:
+            return jsonify({"error": "Document not found"}), 404
+        delete_ingested_document(document)
+        return jsonify({"deleted": did})
+
+    # Generation
     @app.post("/api/projects/<int:pid>/generate")
     def generate(pid):
         d = request.get_json(force=True) or {}

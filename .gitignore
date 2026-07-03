@@ -21,6 +21,8 @@ npm-debug.log*
 
 # Docker / data
 pgdata/
+backend/storage/uploads/*
+!backend/storage/uploads/.gitkeep
 
 # IDE / OS
 .idea/

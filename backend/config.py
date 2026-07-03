@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
@@ -29,6 +31,16 @@ class Config:
     OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "")
     OPENALEX_TIMEOUT = float(os.getenv("OPENALEX_TIMEOUT", "12"))
     OPENALEX_PER_PAGE = int(os.getenv("OPENALEX_PER_PAGE", "6"))
+
+    # Document ingestion
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "storage", "uploads"))
+    MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
+
+    # Future AI provider layer. The current hypothesis engine still uses llm.py.
+    AI_DEFAULT_PROVIDER = os.getenv("AI_DEFAULT_PROVIDER", "noop")
+    AI_LLM_PROVIDER = os.getenv("AI_LLM_PROVIDER", AI_DEFAULT_PROVIDER)
+    AI_EMBEDDING_PROVIDER = os.getenv("AI_EMBEDDING_PROVIDER", AI_DEFAULT_PROVIDER)
+    AI_EXTRACTION_PROVIDER = os.getenv("AI_EXTRACTION_PROVIDER", AI_DEFAULT_PROVIDER)
 
     # ── App behaviour ───────────────────────────────────────────────────────
     SEED_DEMO = _bool("SEED_DEMO", True)
