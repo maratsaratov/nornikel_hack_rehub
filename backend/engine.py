@@ -89,6 +89,8 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         "type": it["source"].source_type,
         "origin": getattr(it["source"], "origin", None),
         "bm25_score": it["bm25_score"],
+        "dense_score": it.get("dense_score"),
+        "hybrid_score": it.get("hybrid_score"),
         "rerank_score": it["rerank_score"],
         "score": it["score"],
         "terms": it["terms"],

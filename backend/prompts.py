@@ -50,7 +50,7 @@ _SCHEMA = """
 
 
 def _format_context(items):
-    """items: list rag-пассажей {source, passage, bm25_score, rerank_score, terms}."""
+    """items: list rag-пассажей {source, passage, bm25_score, dense_score, hybrid_score, rerank_score, terms}."""
     lines, id_map = [], {}
     for i, item in enumerate(items, start=1):
         s = item["source"]
@@ -65,7 +65,12 @@ def _format_context(items):
             f"источник: {origin}" if origin and origin != "manual" else None,
         ]))
         rr = item.get("rerank_score")
-        score_str = f"реранк={rr:.3f}" if isinstance(rr, (int, float)) else f"bm25={item.get('bm25_score')}"
+        if isinstance(rr, (int, float)):
+            score_str = f"реранк={rr:.3f}"
+        elif item.get("hybrid_score") is not None:
+            score_str = f"гибрид={item.get('hybrid_score')}"
+        else:
+            score_str = f"bm25={item.get('bm25_score')}"
         terms = ", ".join(item.get("terms") or [])
         lines.append(
             f"[{sid}] {s.title} ({meta})\n"

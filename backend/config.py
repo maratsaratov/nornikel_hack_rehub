@@ -40,6 +40,16 @@ class Config:
     # чтобы англо- и русскоязычные источники честно сравнил мультиязычный реранкер.
     RETRIEVAL_MIN_PER_LANG = int(os.getenv("RETRIEVAL_MIN_PER_LANG", "5"))
 
+    # ── Dense-ретривер (bge-m3 через OpenRouter) + гибридное слияние ──────────
+    EMBED_MODEL = os.getenv("EMBED_MODEL", "baai/bge-m3")
+    EMBED_ENABLED = _bool("EMBED_ENABLED", True)
+    EMBED_TIMEOUT = float(os.getenv("EMBED_TIMEOUT", "30"))
+    EMBED_BATCH = int(os.getenv("EMBED_BATCH", "96"))
+    # Reciprocal Rank Fusion: BM25 (лексика) + dense (семантика)
+    HYBRID_RRF_K = int(os.getenv("HYBRID_RRF_K", "60"))
+    HYBRID_BM25_WEIGHT = float(os.getenv("HYBRID_BM25_WEIGHT", "1.0"))
+    HYBRID_DENSE_WEIGHT = float(os.getenv("HYBRID_DENSE_WEIGHT", "1.0"))
+
     # ── Внешние научные источники (умный парсер базы знаний) ─────────────────
     # Активные коннекторы по умолчанию (keyless). Materials Project включается
     # автоматически, если задан MP_API_KEY.
