@@ -24,6 +24,29 @@ class Config:
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "7000"))
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
 
+    # ── Reranker (OpenRouter -> Cohere rerank) ──────────────────────────────
+    # Второй этап RAG: переупорядочивает кандидатов кросс-энкодером.
+    RERANK_MODEL = os.getenv("RERANK_MODEL", "cohere/rerank-4-fast")
+    RERANK_ENABLED = _bool("RERANK_ENABLED", True)
+    RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "30"))
+    RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "24"))  # размер пула 1-го этапа
+
+    # ── RAG (chunking) ───────────────────────────────────────────────────────
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "900"))       # символов на пассаж
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
+
+    # ── Внешние научные источники (умный парсер базы знаний) ─────────────────
+    # Активные коннекторы по умолчанию (keyless). Materials Project включается
+    # автоматически, если задан MP_API_KEY.
+    EXTERNAL_SOURCES = os.getenv("EXTERNAL_SOURCES", "openalex,crossref,semantic_scholar")
+    EXTERNAL_TIMEOUT = float(os.getenv("EXTERNAL_TIMEOUT", "15"))
+    CROSSREF_API_URL = os.getenv("CROSSREF_API_URL", "https://api.crossref.org")
+    SEMANTIC_SCHOLAR_API_URL = os.getenv("SEMANTIC_SCHOLAR_API_URL", "https://api.semanticscholar.org")
+    SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+    MP_API_URL = os.getenv("MP_API_URL", "https://api.materialsproject.org")
+    MP_API_KEY = os.getenv("MP_API_KEY", "")   # Materials Project (опционально)
+    CONTACT_MAILTO = os.getenv("CONTACT_MAILTO", os.getenv("OPENALEX_MAILTO", "hypofactory@example.com"))
+
     # OpenAlex
     OPENALEX_API_URL = os.getenv("OPENALEX_API_URL", "https://api.openalex.org")
     OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "")

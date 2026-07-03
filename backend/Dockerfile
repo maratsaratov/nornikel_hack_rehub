@@ -21,5 +21,6 @@ EXPOSE 5000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
     CMD curl -fsS http://localhost:5000/api/health || exit 1
 
-# 2 workers, long timeout because LLM calls can take a while
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "180", "wsgi:app"]
+# 2 workers, long timeout: цепочка acquire → предложение весов → генерация
+# (несколько LLM/сетевых вызовов подряд) может занимать до нескольких минут.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "300", "wsgi:app"]

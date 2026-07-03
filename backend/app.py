@@ -1,15 +1,17 @@
 """Flask API «Фабрики гипотез»."""
 import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from sqlalchemy import inspect, or_, text
 
 from config import Config
 from db import db
 from models import Project, KnowledgeSource, Hypothesis, GenerationRun, DEFAULT_WEIGHTS, composite_score
-from engine import generate_hypotheses
+from engine import generate_hypotheses, suggest_weights
 import llm
-from openalex import search_works
+import reranker
+import connectors
+import export
 
 
 def _parse_weights(raw):
@@ -87,14 +89,95 @@ def _parse_year(raw):
         return None
 
 
-def _ensure_source_origin_column():
-    inspector = inspect(db.engine)
-    columns = {column["name"] for column in inspector.get_columns("knowledge_sources")}
-    if "origin" in columns:
-        return
+def _acquire_knowledge(project, topic, sources=None, limit=None, dry_run=False, max_import=12):
+    """«Умный парсер»: найти по теме внешние научные источники и импортировать в базу.
 
-    db.session.execute(text("ALTER TABLE knowledge_sources ADD COLUMN origin VARCHAR(40)"))
-    db.session.commit()
+    Идея: на этапе поиска — широкий recall из нескольких научных ресурсов; отбор
+    precision происходит позже в RAG+reranker при генерации. Дедуплицируем против
+    уже имеющихся источников проекта.
+    """
+    found = connectors.search_all(topic, sources=sources, per_source_limit=limit)
+    records = found["records"]
+    existing = project.sources.all()
+    marked = _mark_external_results(records, existing)
+
+    imported = []
+    if not dry_run:
+        by_ref, by_ty, by_t = _source_lookups(existing)
+        seen = set()
+        for rec in records:
+            if len(imported) >= max_import:
+                break
+            title = (rec.get("title") or "").strip()
+            content = (rec.get("content") or "").strip()
+            if not (title and content):
+                continue
+            cand = {"title": title, "year": _parse_year(rec.get("year")),
+                    "reference": rec.get("reference")}
+            if _match_existing_source(cand, by_ref, by_ty, by_t):
+                continue
+            key = _source_key(rec.get("reference")) or _source_key(title)
+            if key in seen:
+                continue
+            seen.add(key)
+            s = KnowledgeSource(
+                project_id=project.id,
+                title=title[:400],
+                content=content,
+                source_type=rec.get("source_type", "literature"),
+                origin=rec.get("origin", "external"),
+                authors=(rec.get("authors") or None),
+                year=_parse_year(rec.get("year")),
+                reference=(rec.get("reference") or None),
+            )
+            db.session.add(s)
+            imported.append(s)
+        if imported:
+            db.session.commit()
+
+    return {
+        "topic": topic,
+        "found": len(records),
+        "stats": found["stats"],
+        "errors": found["errors"],
+        "imported_count": len(imported),
+        "imported": [s.to_dict(with_content=False) for s in imported],
+        "results": marked if dry_run else None,
+    }
+
+
+def _ensure_columns():
+    """Лёгкие миграции: добавить недостающие колонки в существующие таблицы.
+
+    db.create_all() создаёт только отсутствующие ТАБЛИЦЫ, но не колонки, поэтому
+    новые поля (origin, goal_link, RAG/rerank-поля прогонов) добавляем вручную.
+    """
+    wanted = {
+        "knowledge_sources": {"origin": "VARCHAR(40)"},
+        "hypotheses": {"goal_link": "TEXT"},
+        "generation_runs": {
+            "weight_mode": "VARCHAR(20)",
+            "weight_rationale": "TEXT",
+            "topic": "VARCHAR(400)",
+            "stages": "JSON",
+            "rerank_usage": "JSON",
+        },
+    }
+    for table, cols in wanted.items():
+        try:
+            existing = {c["name"] for c in inspect(db.engine).get_columns(table)}
+        except Exception:  # noqa - таблицы может не быть
+            continue
+        for col, coltype in cols.items():
+            if col in existing:
+                continue
+            # Каждая колонка — в своей транзакции. try/except делает миграцию
+            # идемпотентной и безопасной к гонке воркеров gunicorn (DuplicateColumn).
+            try:
+                db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}"))
+                db.session.commit()
+            except Exception:  # noqa - уже добавлена другим воркером/прошлым запуском
+                db.session.rollback()
 
 
 def create_app():
@@ -105,7 +188,7 @@ def create_app():
 
     with app.app_context():
         db.create_all()
-        _ensure_source_origin_column()
+        _ensure_columns()
         if Config.SEED_DEMO:
             try:
                 from seed import seed_if_empty
@@ -123,11 +206,20 @@ def create_app():
     def health_llm():
         return jsonify(llm.ping())
 
+    @app.get("/api/health/rerank")
+    def health_rerank():
+        return jsonify(reranker.ping())
+
     @app.get("/api/config")
     def get_config():
         return jsonify({
             "model": Config.OPENAI_MODEL,
+            "rerank_model": Config.RERANK_MODEL,
+            "rerank_enabled": reranker.available(),
             "default_weights": DEFAULT_WEIGHTS,
+            "weight_modes": ["expert", "model", "default"],
+            "connectors": connectors.active_connectors(),
+            "default_sources": connectors.default_sources(),
         })
 
     # ── Projects ────────────────────────────────────────────────────────────
@@ -221,17 +313,19 @@ def create_app():
         )
         existing_rows = p.sources.all()
 
-        external = []
+        sources = request.args.getlist("source") or None
+        found = connectors.search_all(query, sources=sources, per_source_limit=limit)
+        external = _mark_external_results(found["records"], existing_rows)
         external_error = None
-        try:
-            external = _mark_external_results(search_works(query, per_page=limit), existing_rows)
-        except RuntimeError as exc:
-            external_error = str(exc)
+        if not external and found["errors"]:
+            external_error = "; ".join(f"{k}: {v}" for k, v in found["errors"].items())
 
         return jsonify({
             "query": query,
             "local": [s.to_dict(with_content=False) for s in local_rows],
             "external": external,
+            "external_stats": found["stats"],
+            "external_errors": found["errors"],
             "external_error": external_error,
         })
 
@@ -295,6 +389,42 @@ def create_app():
         db.session.commit()
         return jsonify({"created": True, "source": s.to_dict(with_content=False)}), 201
 
+    @app.post("/api/projects/<int:pid>/knowledge/acquire")
+    def acquire_knowledge(pid):
+        """По теме найти внешние научные источники и импортировать в базу знаний.
+
+        Тело: {topic?, sources?: [str], limit?, max_import?, preview?}
+        preview=true — только показать найденное, без импорта.
+        """
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Проект не найден"}), 404
+        d = request.get_json(force=True) or {}
+        topic = (d.get("topic") or d.get("q") or "").strip()
+        if not topic:
+            topic = " ".join(filter(None, [p.kpi_target, p.domain]))[:300]
+        try:
+            result = _acquire_knowledge(
+                p, topic,
+                sources=d.get("sources"),
+                limit=d.get("limit"),
+                dry_run=bool(d.get("preview")),
+                max_import=int(d.get("max_import", 12)),
+            )
+        except Exception as e:  # noqa
+            return jsonify({"error": f"Ошибка поиска источников: {e}"}), 502
+        return jsonify(result)
+
+    @app.post("/api/projects/<int:pid>/weights/suggest")
+    def weights_suggest(pid):
+        """Модель предлагает веса ранжирования под проект (можно переопределить экспертом)."""
+        try:
+            return jsonify(suggest_weights(pid))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+        except Exception as e:  # noqa
+            return jsonify({"error": f"Не удалось предложить веса: {e}"}), 502
+
     @app.put("/api/sources/<int:sid>")
     def update_source(sid):
         s = db.session.get(KnowledgeSource, sid)
@@ -319,20 +449,49 @@ def create_app():
     # ── Generation ──────────────────────────────────────────────────────────
     @app.post("/api/projects/<int:pid>/generate")
     def generate(pid):
+        """Сгенерировать гипотезы через RAG+reranker.
+
+        Тело: {n?, top_k?, weights?, weight_mode?: expert|model|default, topic?,
+               use_rerank?, candidate_pool?, acquire_external?, sources?, max_import?}
+        """
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Проект не найден"}), 404
+
         d = request.get_json(force=True) or {}
-        n = int(d.get("n", 5))
-        n = max(1, min(n, 10))
-        top_k = int(d.get("top_k", 6))
-        weights = _parse_weights(d.get("weights")) or DEFAULT_WEIGHTS
+        n = max(1, min(int(d.get("n", 5)), 10))
+        top_k = max(1, min(int(d.get("top_k", 6)), 12))
+        weights = _parse_weights(d.get("weights"))
+        weight_mode = d.get("weight_mode") or ("expert" if weights else "default")
+        topic = (d.get("topic") or "").strip() or None
+        use_rerank = bool(d.get("use_rerank", True))
+        candidate_pool = d.get("candidate_pool")
+        if candidate_pool is not None:
+            candidate_pool = max(4, min(int(candidate_pool), 60))
+
+        acquired = None
         try:
-            run, hyps = generate_hypotheses(pid, n=n, top_k=top_k, weights=weights)
+            if d.get("acquire_external"):
+                acq_topic = topic or " ".join(filter(None, [p.kpi_target, p.domain]))[:300]
+                acquired = _acquire_knowledge(
+                    p, acq_topic, sources=d.get("sources"),
+                    limit=d.get("acquire_limit"), max_import=int(d.get("max_import", 12)),
+                )
+            run, hyps = generate_hypotheses(
+                pid, n=n, top_k=top_k, weights=weights, weight_mode=weight_mode,
+                topic=topic, use_rerank=use_rerank, candidate_pool=candidate_pool,
+            )
         except ValueError as e:
             return jsonify({"error": str(e)}), 404
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 502
         except Exception as e:  # noqa
             return jsonify({"error": f"Внутренняя ошибка генерации: {e}"}), 500
-        return jsonify({"run": run, "hypotheses": hyps}), 201
+
+        resp = {"run": run, "hypotheses": hyps}
+        if acquired is not None:
+            resp["acquired"] = acquired
+        return jsonify(resp), 201
 
     # ── Hypotheses ──────────────────────────────────────────────────────────
     @app.get("/api/projects/<int:pid>/hypotheses")
@@ -349,6 +508,32 @@ def create_app():
         out = [h.to_dict(weights) for h in rows]
         out.sort(key=lambda x: x["composite"], reverse=True)
         return jsonify(out)
+
+    @app.get("/api/projects/<int:pid>/hypotheses/export")
+    def export_hypotheses(pid):
+        """Экспорт ранжированных гипотез: format=md|json|csv."""
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Проект не найден"}), 404
+        fmt = (request.args.get("format") or "md").lower()
+        weights = _parse_weights(request.args.get("weights")) or DEFAULT_WEIGHTS
+        hyps = [h.to_dict(weights) for h in p.hypotheses.all()]
+        hyps.sort(key=lambda x: x["composite"], reverse=True)
+        project = p.to_dict()
+
+        if fmt == "json":
+            return jsonify({"project": project, "weights": weights, "hypotheses": hyps})
+        if fmt == "csv":
+            return Response(
+                export.to_csv(hyps),
+                mimetype="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.csv"},
+            )
+        return Response(
+            export.to_markdown(project, hyps, weights),
+            mimetype="text/markdown",
+            headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.md"},
+        )
 
     @app.patch("/api/hypotheses/<int:hid>")
     def update_hypothesis(hid):
