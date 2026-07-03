@@ -1,0 +1,29 @@
+# Env / secrets
+.env
+*.env.local
+
+# Claude Code — local per-developer settings (may contain secrets); keep launch.json shareable
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# Docker / data
+pgdata/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

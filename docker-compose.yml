@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hypo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hypo_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-hypofactory}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hypo} -d ${POSTGRES_DB:-hypofactory}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hypo}:${POSTGRES_PASSWORD:-hypo_secret}@db:5432/${POSTGRES_DB:-hypofactory}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  pgdata:
