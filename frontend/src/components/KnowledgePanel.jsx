@@ -22,79 +22,57 @@ const WORK_TYPE_LABEL = {
 }
 
 function compactText(value) {
-  return (value || '').replace(/\s+/g, ' ').trim()
+  if (Array.isArray(value)) return value.filter(Boolean).join(', ')
+  if (value === null || value === undefined) return ''
+  return String(value).trim()
 }
 
-function previewText(source) {
-  return compactText(source.excerpt || source.content || '')
-}
-
-function resultKey(source) {
-  return source.external_id || source.reference || source.id || source.title
-}
-
-function isMostlyUppercase(text) {
-  const letters = [...text].filter((char) => char.toLowerCase() !== char.toUpperCase())
-  if (letters.length < 8) return false
-
-  const uppercase = letters.filter((char) => char === char.toUpperCase()).length
-  return uppercase / letters.length > 0.75
-}
-
-function displayTitle(source) {
-  const title = compactText(source.title)
-  if (!title) return ''
-  if (!isMostlyUppercase(title)) return title
-
-  const lower = title.toLocaleLowerCase('ru-RU')
-  return lower.charAt(0).toLocaleUpperCase('ru-RU') + lower.slice(1)
-}
-
-function metaText(source) {
-  return [source.authors, source.year].filter(Boolean).join(' / ')
-}
-
-function shortText(value, maxLength = 120) {
-  const text = compactText(value)
+function previewText(value, limit = 180) {
+  const text = compactText(value).replace(/\s+/g, ' ')
   if (!text) return ''
-  if (text.length <= maxLength) return text
-  return text.slice(0, maxLength - 3).trimEnd() + '...'
+  return text.length > limit ? `${text.slice(0, limit).trim()}...` : text
 }
 
-function miniDescription(source) {
-  const journal = compactText(source.journal)
-  if (journal) return journal
-
-  const workType = compactText(WORK_TYPE_LABEL[source.work_type] || source.work_type)
-  if (workType) return workType
-
-  const excerpt = previewText(source)
-  const firstSentence = excerpt.split(/(?<=[.!?])\s+/)[0]
-  return shortText(firstSentence || excerpt, 140)
+function displayTitle(item) {
+  return compactText(item?.title || item?.display_name || item?.filename) || 'Без названия'
 }
 
-function sourceDescription(source) {
-  if (source.origin === 'openalex') {
-    return miniDescription(source)
-  }
-  return previewText(source)
-}
-
-function documentStatusLabel(status) {
-  return DOCUMENT_STATUS_LABEL[status] || status || 'unknown'
-}
-
-function documentMeta(document) {
+function sourceMeta(item) {
   const parts = [
-    document.file_type?.toUpperCase(),
-    `${document.chunk_count || 0} чанков`,
-    `${document.table_count || 0} таблиц`,
+    TYPE_LABEL[item?.source_type] || WORK_TYPE_LABEL[item?.work_type] || compactText(item?.source_type || item?.type),
+    compactText(item?.authors),
+    compactText(item?.year || item?.publication_year),
+    compactText(item?.reference || item?.doi),
   ]
-  return parts.filter(Boolean).join(' / ')
+  return parts.filter(Boolean).join(' · ')
 }
 
-function documentTitle(document) {
-  return compactText(document.metadata?.title) || document.filename
+function sourceDescription(item) {
+  return previewText(item?.content || item?.abstract || item?.description)
+}
+
+function resultKey(item, prefix) {
+  return compactText(item?.openalex_id || item?.id || item?.doi || `${prefix}-${displayTitle(item)}-${sourceMeta(item)}`)
+}
+
+function documentStatus(doc) {
+  return compactText(doc?.parse_status || 'uploaded').toLowerCase()
+}
+
+function documentStatusLabel(doc) {
+  const status = documentStatus(doc)
+  return DOCUMENT_STATUS_LABEL[status] || status
+}
+
+function documentMeta(doc) {
+  const metadata = doc?.metadata_json || doc?.metadata || {}
+  const parts = [
+    compactText(doc?.file_type).toUpperCase(),
+    compactText(metadata.title),
+    compactText(metadata.language),
+    compactText(metadata.year || metadata.date),
+  ]
+  return parts.filter(Boolean).join(' · ')
 }
 
 export default function KnowledgePanel({
@@ -111,21 +89,24 @@ export default function KnowledgePanel({
   const [form, setForm] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState(null)
+  const [results, setResults] = useState(EMPTY_RESULTS)
   const [searching, setSearching] = useState(false)
-  const [importingKey, setImportingKey] = useState(null)
+  const [importingKey, setImportingKey] = useState('')
   const [selectedFile, setSelectedFile] = useState(null)
   const [fileInputKey, setFileInputKey] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [deletingDocumentId, setDeletingDocumentId] = useState(null)
 
-  const upd = (key) => (e) => setForm({ ...form, [key]: e.target.value })
+  const updateField = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }))
 
-  async function submit() {
-    if (!form.title.trim() || !form.content.trim()) return
+  async function submit(e) {
+    e.preventDefault()
     setSaving(true)
     try {
-      await onAdd({ ...form, year: form.year ? parseInt(form.year, 10) : null })
+      await onAdd({
+        ...form,
+        year: form.year ? Number(form.year) : null,
+      })
       setForm(EMPTY)
       setOpen(false)
     } finally {
@@ -134,22 +115,21 @@ export default function KnowledgePanel({
   }
 
   async function runSearch() {
-    const cleaned = query.trim()
-    if (cleaned.length < 2) {
+    const term = query.trim()
+    if (!term || !onSearch) {
       setResults(EMPTY_RESULTS)
       return
     }
 
     setSearching(true)
     try {
-      const next = await onSearch(cleaned)
-      setResults(next)
-    } catch (e) {
+      const payload = await onSearch(term)
       setResults({
-        query: cleaned,
-        local: [],
-        external: [],
-        external_error: e.message,
+        ...EMPTY_RESULTS,
+        ...payload,
+        query: payload?.query || term,
+        local: payload?.local || [],
+        external: payload?.external || [],
       })
     } finally {
       setSearching(false)
@@ -158,27 +138,17 @@ export default function KnowledgePanel({
 
   function clearSearch() {
     setQuery('')
-    setResults(null)
+    setResults(EMPTY_RESULTS)
   }
 
-  async function importResult(source) {
-    const key = resultKey(source)
+  async function importResult(item) {
+    if (!onImportOpenAlex) return
+    const key = resultKey(item, 'external')
     setImportingKey(key)
     try {
-      const res = await onImportOpenAlex(source)
-      setResults((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          external: prev.external.map((item) => (
-            resultKey(item) === key
-              ? { ...item, already_added: true, existing_source_id: res.source?.id || item.existing_source_id }
-              : item
-          )),
-        }
-      })
+      await onImportOpenAlex(item)
     } finally {
-      setImportingKey(null)
+      setImportingKey('')
     }
   }
 
@@ -188,7 +158,7 @@ export default function KnowledgePanel({
     try {
       await onUploadDocument(selectedFile)
       setSelectedFile(null)
-      setFileInputKey((value) => value + 1)
+      setFileInputKey((key) => key + 1)
     } finally {
       setUploading(false)
     }
@@ -210,238 +180,170 @@ export default function KnowledgePanel({
         <h3>База знаний</h3>
         <span className="count">{sources.length + documents.length}</span>
         <div className="spacer" />
-        <button className="btn sm" onClick={() => setOpen(true)}>+ Источник</button>
+        <button className="btn primary" onClick={() => setOpen(true)}>Добавить источник</button>
       </div>
-      <div className="card-body" style={{ paddingTop: 4, paddingBottom: 4 }}>
+
+      <div className="card-body knowledge-panel">
         <div className="source-tools">
           <div className="source-search-row">
             <input
+              className="source-search-input"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-              placeholder="Ключевые слова, DOI, авторы..."
+              onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
+              placeholder="Найти источник в проекте или OpenAlex"
             />
-            <button className="btn sm primary" disabled={searching} onClick={runSearch}>
-              {searching ? 'Поиск...' : 'Найти'}
+            <button className="btn secondary" onClick={runSearch} disabled={searching || !query.trim()}>
+              {searching ? 'Ищем...' : 'Найти'}
             </button>
-            {(query || results) && (
-              <button className="btn sm" onClick={clearSearch}>Сбросить</button>
+            {results.query && (
+              <button className="btn ghost" onClick={clearSearch}>Сбросить</button>
             )}
           </div>
-          <p className="section-hint">
-            Поиск идет по источникам проекта и по внешнему источнику. Внешние статьи можно сразу добавить в базу.
-          </p>
-        </div>
 
-        <div className="document-upload">
-          <div className="doc-upload-row">
-            <input
-              key={fileInputKey}
-              className="doc-file-input"
-              type="file"
-              accept={ACCEPTED_DOCUMENTS}
-              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-            />
-            <button
-              className="btn sm primary"
-              disabled={!selectedFile || uploading}
-              onClick={uploadSelectedFile}
-            >
-              {uploading ? 'Загрузка...' : 'Загрузить файл'}
-            </button>
+          {results.query && (
+            <div className="search-results">
+              <div className="search-group">
+                <div className="search-group-head">
+                  <span>В проекте</span>
+                  <span className="count">{results.local.length}</span>
+                </div>
+                {results.local.length === 0 && <p className="section-hint">Совпадений в добавленных источниках нет.</p>}
+                {results.local.map((item) => (
+                  <div className="search-item" key={resultKey(item, 'local')}>
+                    <div className="search-item-title">{displayTitle(item)}</div>
+                    {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
+                    {sourceDescription(item) && <p className="search-item-desc">{sourceDescription(item)}</p>}
+                  </div>
+                ))}
+              </div>
+
+              <div className="search-group">
+                <div className="search-group-head">
+                  <span>OpenAlex</span>
+                  <span className="count">{results.external.length}</span>
+                </div>
+                {results.external_error && <p className="search-error">{results.external_error}</p>}
+                {results.external.length === 0 && !results.external_error && (
+                  <p className="section-hint">Внешних результатов нет.</p>
+                )}
+                {results.external.map((item) => {
+                  const key = resultKey(item, 'external')
+                  return (
+                    <div className="search-item" key={key}>
+                      <div className="search-actions">
+                        <div>
+                          <div className="search-item-title">{displayTitle(item)}</div>
+                          {sourceMeta(item) && <div className="search-item-meta">{sourceMeta(item)}</div>}
+                        </div>
+                        <button
+                          className="btn secondary btn-compact"
+                          onClick={() => importResult(item)}
+                          disabled={importingKey === key}
+                        >
+                          {importingKey === key ? 'Импорт...' : 'Импорт'}
+                        </button>
+                      </div>
+                      {sourceDescription(item) && <p className="search-item-desc">{sourceDescription(item)}</p>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="document-upload">
+            <div>
+              <h4>Файлы источников</h4>
+              <p className="section-hint">PDF, DOCX, XLSX, CSV и TXT сохраняются отдельно от генератора гипотез.</p>
+            </div>
+            <div className="doc-upload-row">
+              <input
+                key={fileInputKey}
+                className="doc-file-input"
+                type="file"
+                accept={ACCEPTED_DOCUMENTS}
+                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+              />
+              <button className="btn secondary" onClick={uploadSelectedFile} disabled={!selectedFile || uploading}>
+                {uploading ? 'Загрузка...' : 'Загрузить'}
+              </button>
+            </div>
           </div>
-          <p className="section-hint">
-            PDF, DOCX, XLSX, CSV и TXT сохраняются как документы проекта и парсятся отдельно от генерации гипотез.
-          </p>
         </div>
 
         {documents.length > 0 && (
           <div className="document-list">
-            <div className="source-list-title">Файлы проекта</div>
-            {documents.map((document) => (
-              <div className="document-item" key={document.id}>
-                <div className="document-top">
-                  <span className={`doc-status status-${document.parse_status}`}>
-                    {documentStatusLabel(document.parse_status)}
-                  </span>
-                  <span className="document-title">{documentTitle(document)}</span>
-                  <button
-                    className="btn ghost sm danger"
-                    disabled={deletingDocumentId === document.id}
-                    title="Удалить файл"
-                    onClick={() => removeDocument(document.id)}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div className="document-meta">
-                  <span>{document.filename}</span>
-                  <span>{documentMeta(document)}</span>
-                </div>
-                {document.raw_text_preview && (
-                  <div className="document-preview">{document.raw_text_preview}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {results && (
-          <div className="search-results">
-            <div className="search-group">
-              <div className="search-group-head">
-                <h4>Совпадения в проекте</h4>
-                <span>{results.local.length}</span>
-              </div>
-              {results.local.length === 0 ? (
-                <p className="section-hint">В локальной базе совпадений пока нет.</p>
-              ) : (
-                results.local.map((source) => (
-                  <div className="search-item" key={`local-${source.id}`}>
-                    <div className="search-top">
-                      <div className="search-main">
-                        <div className="search-tags">
-                          <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-                          <span className="search-badge local">в базе</span>
-                        </div>
-                        <div className="search-title">{displayTitle(source)}</div>
-                      </div>
+            {documents.map((doc) => {
+              const status = documentStatus(doc)
+              return (
+                <div className="document-item" key={doc.id}>
+                  <div className="doc-main">
+                    <div className="doc-title-row">
+                      <strong>{displayTitle(doc)}</strong>
+                      <span className={`doc-status status-${status}`}>{documentStatusLabel(doc)}</span>
                     </div>
-                    {metaText(source) && <div className="search-meta">{metaText(source)}</div>}
-                    {sourceDescription(source) && <div className="search-description">{sourceDescription(source)}</div>}
-                    {source.reference && <div className="search-links">{source.reference}</div>}
+                    {documentMeta(doc) && <p className="doc-meta">{documentMeta(doc)}</p>}
                   </div>
-                ))
-              )}
-            </div>
-
-            <div className="search-group">
-              <div className="search-group-head">
-                <h4>Внешний источник</h4>
-                <span>{results.external.length}</span>
-              </div>
-              {results.external_error && (
-                <p className="section-hint search-error">{results.external_error}</p>
-              )}
-              {!results.external_error && results.external.length === 0 ? (
-                <p className="section-hint">Внешний источник ничего не вернул по этому запросу.</p>
-              ) : (
-                results.external.map((source) => {
-                  const key = resultKey(source)
-                  const disabled = source.already_added || importingKey === key
-                  return (
-                    <div className="search-item" key={`external-${key}`}>
-                      <div className="search-top">
-                        <div className="search-main">
-                          <div className="search-tags">
-                            <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-                            {source.already_added && <span className="search-badge added">уже в базе</span>}
-                          </div>
-                          <div className="search-title">{displayTitle(source)}</div>
-                        </div>
-                        <button
-                          className={`btn sm ${source.already_added ? '' : 'primary'}`}
-                          disabled={disabled}
-                          onClick={() => importResult(source)}
-                        >
-                          {importingKey === key ? 'Добавление...' : source.already_added ? 'Уже добавлен' : 'Добавить'}
-                        </button>
-                      </div>
-                      {metaText(source) && <div className="search-meta">{metaText(source)}</div>}
-                      {miniDescription(source) && <div className="search-description">{miniDescription(source)}</div>}
-                      <div className="search-links">
-                        {source.reference && <span>{source.reference}</span>}
-                        {source.landing_page_url && (
-                          <a href={source.landing_page_url} target="_blank" rel="noreferrer">Страница</a>
-                        )}
-                        {source.pdf_url && (
-                          <a href={source.pdf_url} target="_blank" rel="noreferrer">PDF</a>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-
-            {!results.external_error && results.local.length === 0 && results.external.length === 0 && (
-              <p className="section-hint" style={{ marginTop: -4 }}>
-                По запросу «{results.query}» ничего не найдено.
-              </p>
-            )}
+                  {onDeleteDocument && (
+                    <button
+                      className="btn secondary btn-compact"
+                      onClick={() => removeDocument(doc.id)}
+                      disabled={deletingDocumentId === doc.id}
+                    >
+                      {deletingDocumentId === doc.id ? 'Удаление...' : 'Удалить'}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
 
-        {sources.length > 0 && <div className="source-list-title">Все источники проекта</div>}
         {sources.length === 0 && documents.length === 0 && (
-          <p className="section-hint" style={{ padding: '10px 0' }}>
-            Добавьте литературу, отчеты и эксперименты. На их основе будут строиться гипотезы.
-          </p>
+          <p className="section-hint">Добавьте статьи, отчеты, патенты или файлы, чтобы сформировать базу знаний проекта.</p>
         )}
-        {sources.map((source) => (
-          <div className="source" key={source.id}>
+
+        {sources.map((s) => (
+          <div className="source" key={s.id}>
             <div className="s-top">
-              <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-              <span className="s-title">{displayTitle(source)}</span>
-              <button className="btn ghost sm danger" title="Удалить" onClick={() => onDelete(source.id)}>✕</button>
+              <strong>{displayTitle(s)}</strong>
+              <button className="btn secondary btn-compact" onClick={() => onDelete(s.id)}>Удалить</button>
             </div>
-            {(metaText(source) || sourceDescription(source)) && (
-              <div className="s-excerpt">
-                {metaText(source) && (
-                  <b style={{ color: 'var(--ink-soft)' }}>
-                    {metaText(source)}
-                    {sourceDescription(source) ? ' - ' : ''}
-                  </b>
-                )}
-                {sourceDescription(source)}
-              </div>
-            )}
+            <p className="s-meta">{sourceMeta(s)}</p>
+            <p>{sourceDescription(s)}</p>
           </div>
         ))}
       </div>
 
       {open && (
-        <Modal
-          title="Новый источник знаний"
-          onClose={() => setOpen(false)}
-          footer={(
-            <>
-              <button className="btn" onClick={() => setOpen(false)}>Отмена</button>
-              <button className="btn primary" disabled={saving} onClick={submit}>
-                {saving ? 'Сохранение...' : 'Добавить'}
-              </button>
-            </>
-          )}
-        >
-          <Field label="Тип источника">
-            <select value={form.source_type} onChange={upd('source_type')}>
-              <option value="literature">Литература / статья</option>
-              <option value="report">Внутренний отчет</option>
-              <option value="experiment">Эксперимент / лабораторные данные</option>
-            </select>
-          </Field>
-          <Field label="Заголовок *">
-            <input value={form.title} onChange={upd('title')} placeholder="Название статьи / отчета" />
-          </Field>
-          <div className="row">
-            <Field label="Авторы / подразделение">
-              <input value={form.authors} onChange={upd('authors')} placeholder="Petrov et al." />
+        <Modal title="Новый источник" onClose={() => setOpen(false)}>
+          <form onSubmit={submit} className="form-grid">
+            <Field label="Название">
+              <input value={form.title} onChange={updateField('title')} required />
+            </Field>
+            <Field label="Тип">
+              <select value={form.source_type} onChange={updateField('source_type')}>
+                {Object.entries(TYPE_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </Field>
+            <Field label="Авторы">
+              <input value={form.authors} onChange={updateField('authors')} />
             </Field>
             <Field label="Год">
-              <input value={form.year} onChange={upd('year')} placeholder="2023" className="num-input" />
+              <input type="number" min="1900" max="2100" value={form.year} onChange={updateField('year')} />
             </Field>
-          </div>
-          <Field label="Ссылка / DOI / инв. номер">
-            <input value={form.reference} onChange={upd('reference')} placeholder="DOI, ссылка или ID отчета" />
-          </Field>
-          <Field label="Содержание / аннотация *">
-            <textarea
-              value={form.content}
-              onChange={upd('content')}
-              rows={7}
-              placeholder="Вставьте текст, аннотацию или ключевые выводы источника..."
-            />
-          </Field>
+            <Field label="Ссылка / DOI">
+              <input value={form.reference} onChange={updateField('reference')} />
+            </Field>
+            <Field label="Содержание">
+              <textarea rows="8" value={form.content} onChange={updateField('content')} required />
+            </Field>
+            <div className="modal-actions">
+              <button type="button" className="btn ghost" onClick={() => setOpen(false)}>Отмена</button>
+              <button type="submit" className="btn primary" disabled={saving}>{saving ? 'Сохраняем...' : 'Сохранить'}</button>
+            </div>
+          </form>
         </Modal>
       )}
     </div>
