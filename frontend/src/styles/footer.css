@@ -1,0 +1,114 @@
+.app-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.app-footer__inner {
+  width: min(100% - 56px, 1158px);
+  margin: 0 auto;
+  padding: 42px 0 36px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 268px;
+  gap: 42px;
+  align-items: center;
+}
+
+.footer-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 36px;
+}
+
+.footer-columns h2 {
+  margin-bottom: 14px;
+  color: #3b3e46;
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.footer-columns a {
+  display: block;
+  margin-top: 7px;
+  color: #a0a4ad;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.status-card {
+  min-height: 96px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 3px;
+  color: #33363d;
+  text-align: center;
+}
+
+.status-card__icon {
+  color: #33363d;
+}
+
+.status-card strong {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.status-card span:last-child {
+  color: #aaaeb7;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.status-card--warn .status-card__icon {
+  color: #b8863b;
+}
+
+.app-footer__bottom {
+  min-height: 72px;
+  border-top: 1px solid var(--line);
+  width: min(100% - 56px, 1158px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  color: #a4a8b0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.app-footer__bottom nav {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+}
+
+.empty-project {
+  width: min(100% - 56px, 720px);
+  min-height: 360px;
+  margin: 70px auto;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty-project .button--primary {
+  background: #24262d;
+  color: #ffffff;
+  border-color: #24262d;
+}
+

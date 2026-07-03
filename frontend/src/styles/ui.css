@@ -1,0 +1,158 @@
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(29, 31, 36, 0.38);
+  backdrop-filter: blur(10px);
+}
+
+.modal {
+  width: min(100%, 720px);
+  max-height: min(90vh, 920px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(28, 30, 36, 0.18);
+}
+
+.modal-head,
+.modal-foot {
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h2 {
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.modal-body {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.modal-actions,
+.modal-foot {
+  justify-content: flex-end;
+}
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+}
+
+.field label {
+  color: #5f646f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 9px 12px;
+  color: var(--ink);
+  outline: 0;
+}
+
+.field textarea {
+  min-height: 132px;
+  resize: vertical;
+}
+
+.btn {
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #ffffff;
+  color: #4a4d55;
+  padding: 0 15px;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.btn.primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.btn.secondary,
+.btn.ghost {
+  background: #ffffff;
+}
+
+.btn-close {
+  width: 38px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 120;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 18px;
+  background: #ffffff;
+  color: #2f333a;
+  box-shadow: 0 18px 40px rgba(33, 36, 43, 0.12);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.toast.err {
+  color: #a33f3f;
+}
+
+.toast.ok {
+  color: #2b7d52;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
