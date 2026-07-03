@@ -118,7 +118,7 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
             )}
           </div>
           <p className="section-hint">
-            Поиск идет по источникам проекта и по OpenAlex. Внешние статьи можно сразу добавить в базу.
+            Поиск идет по источникам проекта и по внешнему источнику. Внешние статьи можно сразу добавить в базу.
           </p>
         </div>
 
@@ -156,14 +156,14 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
 
             <div className="search-group">
               <div className="search-group-head">
-                <h4>OpenAlex</h4>
+                <h4>Внешний источник</h4>
                 <span>{results.external.length}</span>
               </div>
               {results.external_error && (
                 <p className="section-hint search-error">{results.external_error}</p>
               )}
               {!results.external_error && results.external.length === 0 ? (
-                <p className="section-hint">OpenAlex ничего не вернул по этому запросу.</p>
+                <p className="section-hint">Внешний источник ничего не вернул по этому запросу.</p>
               ) : (
                 results.external.map((source) => {
                   const key = resultKey(source)
@@ -174,7 +174,7 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
                         <div className="search-main">
                           <div className="search-tags">
                             <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-                            <span className="search-badge external">OpenAlex</span>
+                            <span className="search-badge external">Внешний</span>
                             {source.already_added && <span className="search-badge added">уже в базе</span>}
                           </div>
                           <div className="s-title">{source.title}</div>

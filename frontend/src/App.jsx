@@ -125,7 +125,7 @@ export default function App() {
     try {
       const res = await api.importOpenAlexSource(currentId, data)
       await reloadSources()
-      flash(res.created ? 'Источник импортирован из OpenAlex' : 'Источник уже есть в базе')
+      flash(res.created ? 'Источник импортирован из внешнего источника' : 'Источник уже есть в базе')
       return res
     } catch (e) {
       flash(e.message, 'err')
