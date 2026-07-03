@@ -129,7 +129,7 @@ def search_works(query: str, per_page: int | None = None) -> list[dict[str, Any]
             response = client.get("/works", params=params)
             response.raise_for_status()
     except httpx.HTTPError as exc:
-        raise RuntimeError("Не удалось получить результаты из OpenAlex") from exc
+        raise RuntimeError("Не удалось получить результаты из внешнего источника") from exc
 
     payload = response.json()
     return [normalize_work(work) for work in payload.get("results", [])]

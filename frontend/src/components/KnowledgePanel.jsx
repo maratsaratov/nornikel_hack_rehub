@@ -4,21 +4,72 @@ import { Modal, Field, TYPE_LABEL } from './ui.jsx'
 const EMPTY = { title: '', content: '', source_type: 'literature', authors: '', year: '', reference: '' }
 const EMPTY_RESULTS = { query: '', local: [], external: [], external_error: null }
 
+const WORK_TYPE_LABEL = {
+  article: 'Статья',
+  book: 'Книга',
+  dataset: 'Набор данных',
+  dissertation: 'Диссертация',
+  preprint: 'Препринт',
+  report: 'Отчет',
+}
+
+function compactText(value) {
+  return (value || '').replace(/\s+/g, ' ').trim()
+}
+
 function previewText(source) {
-  return source.excerpt || source.content || ''
+  return compactText(source.excerpt || source.content || '')
 }
 
 function resultKey(source) {
   return source.external_id || source.reference || source.id || source.title
 }
 
-function metaText(source) {
-  return [source.authors, source.year, source.journal].filter(Boolean).join(' / ')
+function isMostlyUppercase(text) {
+  const letters = [...text].filter((char) => char.toLowerCase() !== char.toUpperCase())
+  if (letters.length < 8) return false
+
+  const uppercase = letters.filter((char) => char === char.toUpperCase()).length
+  return uppercase / letters.length > 0.75
 }
 
-function originLabel(source) {
-  if (source.origin === 'openalex') return 'Внешний'
-  return ''
+function displayTitle(source) {
+  const title = compactText(source.title)
+  if (!title) return ''
+  if (!isMostlyUppercase(title)) return title
+
+  const lower = title.toLocaleLowerCase('ru-RU')
+  return lower.charAt(0).toLocaleUpperCase('ru-RU') + lower.slice(1)
+}
+
+function metaText(source) {
+  return [source.authors, source.year].filter(Boolean).join(' / ')
+}
+
+function shortText(value, maxLength = 120) {
+  const text = compactText(value)
+  if (!text) return ''
+  if (text.length <= maxLength) return text
+  return text.slice(0, maxLength - 3).trimEnd() + '...'
+}
+
+function miniDescription(source) {
+  const journal = compactText(source.journal)
+  if (journal) return journal
+
+  const workType = compactText(WORK_TYPE_LABEL[source.work_type] || source.work_type)
+  if (workType) return workType
+
+  const excerpt = previewText(source)
+  const firstSentence = excerpt.split(/(?<=[.!?])\s+/)[0]
+  return shortText(firstSentence || excerpt, 140)
+}
+
+function sourceDescription(source) {
+  if (source.origin === 'openalex') {
+    return miniDescription(source)
+  }
+  return previewText(source)
 }
 
 export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onImportOpenAlex }) {
@@ -137,17 +188,14 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
                     <div className="search-top">
                       <div className="search-main">
                         <div className="search-tags">
-                          <div className="marker-stack">
-                            <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-                            {originLabel(source) && <span className="origin-badge">{originLabel(source)}</span>}
-                          </div>
+                          <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
                           <span className="search-badge local">в базе</span>
                         </div>
-                        <div className="s-title">{source.title}</div>
+                        <div className="search-title">{displayTitle(source)}</div>
                       </div>
                     </div>
                     {metaText(source) && <div className="search-meta">{metaText(source)}</div>}
-                    <div className="s-excerpt">{previewText(source)}</div>
+                    {sourceDescription(source) && <div className="search-description">{sourceDescription(source)}</div>}
                     {source.reference && <div className="search-links">{source.reference}</div>}
                   </div>
                 ))
@@ -174,10 +222,9 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
                         <div className="search-main">
                           <div className="search-tags">
                             <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-                            <span className="search-badge external">Внешний</span>
                             {source.already_added && <span className="search-badge added">уже в базе</span>}
                           </div>
-                          <div className="s-title">{source.title}</div>
+                          <div className="search-title">{displayTitle(source)}</div>
                         </div>
                         <button
                           className={`btn sm ${source.already_added ? '' : 'primary'}`}
@@ -188,7 +235,7 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
                         </button>
                       </div>
                       {metaText(source) && <div className="search-meta">{metaText(source)}</div>}
-                      <div className="s-excerpt">{previewText(source)}</div>
+                      {miniDescription(source) && <div className="search-description">{miniDescription(source)}</div>}
                       <div className="search-links">
                         {source.reference && <span>{source.reference}</span>}
                         {source.landing_page_url && (
@@ -221,21 +268,21 @@ export default function KnowledgePanel({ sources, onAdd, onDelete, onSearch, onI
         {sources.map((source) => (
           <div className="source" key={source.id}>
             <div className="s-top">
-              <div className="marker-stack">
-                <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
-                {originLabel(source) && <span className="origin-badge">{originLabel(source)}</span>}
-              </div>
-              <span className="s-title">{source.title}</span>
+              <span className={`type-tag type-${source.source_type}`}>{TYPE_LABEL[source.source_type] || source.source_type}</span>
+              <span className="s-title">{displayTitle(source)}</span>
               <button className="btn ghost sm danger" title="Удалить" onClick={() => onDelete(source.id)}>✕</button>
             </div>
-            <div className="s-excerpt">
-              {(source.authors || source.year) && (
-                <b style={{ color: 'var(--ink-soft)' }}>
-                  {[source.authors, source.year].filter(Boolean).join(', ')} -{' '}
-                </b>
-              )}
-              {previewText(source)}
-            </div>
+            {(metaText(source) || sourceDescription(source)) && (
+              <div className="s-excerpt">
+                {metaText(source) && (
+                  <b style={{ color: 'var(--ink-soft)' }}>
+                    {metaText(source)}
+                    {sourceDescription(source) ? ' - ' : ''}
+                  </b>
+                )}
+                {sourceDescription(source)}
+              </div>
+            )}
           </div>
         ))}
       </div>
