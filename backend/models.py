@@ -77,6 +77,7 @@ class KnowledgeSource(db.Model):
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id"), nullable=False)
     title = db.Column(db.String(400), nullable=False)
     source_type = db.Column(db.String(40), default="literature")  # literature|report|experiment
+    origin = db.Column(db.String(40), default="manual")  # manual|openalex
     content = db.Column(db.Text, nullable=False)
     authors = db.Column(db.String(400))
     year = db.Column(db.Integer)
@@ -84,20 +85,23 @@ class KnowledgeSource(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self, with_content=True):
+        excerpt = " ".join((self.content or "").split())
+        if len(excerpt) > 240:
+            excerpt = excerpt[:237].rstrip() + "..."
         d = {
             "id": self.id,
             "project_id": self.project_id,
             "title": self.title,
             "source_type": self.source_type,
+            "origin": self.origin or "manual",
             "authors": self.authors,
             "year": self.year,
             "reference": self.reference,
+            "excerpt": excerpt,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
         if with_content:
             d["content"] = self.content
-        else:
-            d["excerpt"] = (self.content or "")[:240]
         return d
 
 

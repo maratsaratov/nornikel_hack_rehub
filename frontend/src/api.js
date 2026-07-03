@@ -27,7 +27,9 @@ export const api = {
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
 
   listSources: (id) => req(`/api/projects/${id}/sources`),
+  searchSources: (id, q, limit = 6) => req(`/api/projects/${id}/sources/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   addSource: (id, b) => req(`/api/projects/${id}/sources`, { method: 'POST', ...body(b) }),
+  importOpenAlexSource: (id, b) => req(`/api/projects/${id}/sources/import-openalex`, { method: 'POST', ...body(b) }),
   deleteSource: (id) => req(`/api/sources/${id}`, { method: 'DELETE' }),
 
   generate: (id, b) => req(`/api/projects/${id}/generate`, { method: 'POST', ...body(b) }),

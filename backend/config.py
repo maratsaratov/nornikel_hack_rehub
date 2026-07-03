@@ -24,5 +24,11 @@ class Config:
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "7000"))
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
 
+    # OpenAlex
+    OPENALEX_API_URL = os.getenv("OPENALEX_API_URL", "https://api.openalex.org")
+    OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "")
+    OPENALEX_TIMEOUT = float(os.getenv("OPENALEX_TIMEOUT", "12"))
+    OPENALEX_PER_PAGE = int(os.getenv("OPENALEX_PER_PAGE", "6"))
+
     # ── App behaviour ───────────────────────────────────────────────────────
     SEED_DEMO = _bool("SEED_DEMO", True)

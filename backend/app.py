@@ -2,12 +2,14 @@
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from sqlalchemy import inspect, or_, text
 
 from config import Config
 from db import db
 from models import Project, KnowledgeSource, Hypothesis, GenerationRun, DEFAULT_WEIGHTS, composite_score
 from engine import generate_hypotheses
 import llm
+from openalex import search_works
 
 
 def _parse_weights(raw):
@@ -22,6 +24,79 @@ def _parse_weights(raw):
         return None
 
 
+def _source_key(value):
+    return (value or "").strip().lower()
+
+
+def _source_lookups(rows):
+    by_ref = {}
+    by_title = {}
+    by_title_year = {}
+
+    for source in rows:
+        title_key = _source_key(source.title)
+        ref_key = _source_key(source.reference)
+
+        if ref_key and ref_key not in by_ref:
+            by_ref[ref_key] = source
+        if title_key and title_key not in by_title:
+            by_title[title_key] = source
+        if title_key and source.year is not None:
+            key = (title_key, source.year)
+            if key not in by_title_year:
+                by_title_year[key] = source
+
+    return by_ref, by_title_year, by_title
+
+
+def _match_existing_source(candidate, by_ref, by_title_year, by_title):
+    ref_key = _source_key(candidate.get("reference"))
+    title_key = _source_key(candidate.get("title"))
+    year = candidate.get("year")
+
+    if ref_key and ref_key in by_ref:
+        return by_ref[ref_key]
+    if title_key and year is not None and (title_key, year) in by_title_year:
+        return by_title_year[(title_key, year)]
+    if title_key and title_key in by_title:
+        return by_title[title_key]
+    return None
+
+
+def _mark_external_results(results, existing_rows):
+    by_ref, by_title_year, by_title = _source_lookups(existing_rows)
+    marked = []
+
+    for result in results:
+        existing = _match_existing_source(result, by_ref, by_title_year, by_title)
+        marked.append({
+            **result,
+            "already_added": bool(existing),
+            "existing_source_id": existing.id if existing else None,
+        })
+
+    return marked
+
+
+def _parse_year(raw):
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_source_origin_column():
+    inspector = inspect(db.engine)
+    columns = {column["name"] for column in inspector.get_columns("knowledge_sources")}
+    if "origin" in columns:
+        return
+
+    db.session.execute(text("ALTER TABLE knowledge_sources ADD COLUMN origin VARCHAR(40)"))
+    db.session.commit()
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -30,6 +105,7 @@ def create_app():
 
     with app.app_context():
         db.create_all()
+        _ensure_source_origin_column()
         if Config.SEED_DEMO:
             try:
                 from seed import seed_if_empty
@@ -112,7 +188,52 @@ def create_app():
         if not p:
             return jsonify({"error": "Проект не найден"}), 404
         rows = p.sources.order_by(KnowledgeSource.created_at.desc()).all()
-        return jsonify([s.to_dict() for s in rows])
+        return jsonify([s.to_dict(with_content=False) for s in rows])
+
+    @app.get("/api/projects/<int:pid>/sources/search")
+    def search_sources(pid):
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Проект не найден"}), 404
+
+        query = (request.args.get("q") or "").strip()
+        limit = max(1, min(int(request.args.get("limit", Config.OPENALEX_PER_PAGE)), 10))
+        if len(query) < 2:
+            return jsonify({
+                "query": query,
+                "local": [],
+                "external": [],
+                "external_error": None,
+            })
+
+        pattern = f"%{query}%"
+        local_rows = (
+            p.sources
+            .filter(or_(
+                KnowledgeSource.title.ilike(pattern),
+                KnowledgeSource.content.ilike(pattern),
+                KnowledgeSource.authors.ilike(pattern),
+                KnowledgeSource.reference.ilike(pattern),
+            ))
+            .order_by(KnowledgeSource.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        existing_rows = p.sources.all()
+
+        external = []
+        external_error = None
+        try:
+            external = _mark_external_results(search_works(query, per_page=limit), existing_rows)
+        except RuntimeError as exc:
+            external_error = str(exc)
+
+        return jsonify({
+            "query": query,
+            "local": [s.to_dict(with_content=False) for s in local_rows],
+            "external": external,
+            "external_error": external_error,
+        })
 
     @app.post("/api/projects/<int:pid>/sources")
     def add_source(pid):
@@ -127,13 +248,52 @@ def create_app():
             title=d["title"].strip(),
             content=d["content"].strip(),
             source_type=d.get("source_type", "literature"),
+            origin="manual",
             authors=d.get("authors"),
             year=d.get("year"),
             reference=d.get("reference"),
         )
         db.session.add(s)
         db.session.commit()
-        return jsonify(s.to_dict()), 201
+        return jsonify(s.to_dict(with_content=False)), 201
+
+    @app.post("/api/projects/<int:pid>/sources/import-openalex")
+    def import_openalex_source(pid):
+        p = db.session.get(Project, pid)
+        if not p:
+            return jsonify({"error": "Проект не найден"}), 404
+
+        d = request.get_json(force=True) or {}
+        title = (d.get("title") or "").strip()
+        content = (d.get("content") or "").strip()
+        if not (title and content):
+            return jsonify({"error": "Для импорта нужны title и content"}), 400
+
+        year = _parse_year(d.get("year"))
+        reference = (d.get("reference") or "").strip() or (d.get("external_id") or "").strip() or None
+        authors = (d.get("authors") or "").strip() or None
+
+        existing_rows = p.sources.all()
+        existing = _match_existing_source(
+            {"title": title, "year": year, "reference": reference},
+            *_source_lookups(existing_rows),
+        )
+        if existing:
+            return jsonify({"created": False, "source": existing.to_dict(with_content=False)}), 200
+
+        s = KnowledgeSource(
+            project_id=pid,
+            title=title,
+            content=content,
+            source_type="literature",
+            origin="openalex",
+            authors=authors,
+            year=year,
+            reference=reference,
+        )
+        db.session.add(s)
+        db.session.commit()
+        return jsonify({"created": True, "source": s.to_dict(with_content=False)}), 201
 
     @app.put("/api/sources/<int:sid>")
     def update_source(sid):
@@ -143,9 +303,9 @@ def create_app():
         d = request.get_json(force=True) or {}
         for f in ("title", "content", "source_type", "authors", "year", "reference"):
             if f in d:
-                setattr(s, f, d[f])
+                setattr(s, f, _parse_year(d[f]) if f == "year" else d[f])
         db.session.commit()
-        return jsonify(s.to_dict())
+        return jsonify(s.to_dict(with_content=False))
 
     @app.delete("/api/sources/<int:sid>")
     def delete_source(sid):
