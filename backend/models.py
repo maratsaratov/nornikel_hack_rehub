@@ -115,7 +115,7 @@ class GenerationRun(db.Model):
     weight_mode = db.Column(db.String(20))   # expert | model | default
     weight_rationale = db.Column(db.Text)    # обоснование весов (если предложены моделью)
     topic = db.Column(db.String(400))        # свободная тема запроса (если задана)
-    retrieved = db.Column(db.JSON)           # финальный контекст: [{source_id, title, tfidf, rerank, terms}]
+    retrieved = db.Column(db.JSON)           # финальный контекст: [{source_id, title, bm25, dense, hybrid, rerank, terms, lang}]
     stages = db.Column(db.JSON)              # этапы RAG: {passages, candidates, reranked, rerank_model}
     rerank_usage = db.Column(db.JSON)        # стоимость реранкера
     n_requested = db.Column(db.Integer)

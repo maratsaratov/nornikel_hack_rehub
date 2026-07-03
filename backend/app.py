@@ -10,6 +10,7 @@ from models import Project, KnowledgeSource, Hypothesis, GenerationRun, DEFAULT_
 from engine import generate_hypotheses, suggest_weights
 import llm
 import reranker
+import embeddings
 import connectors
 import export
 
@@ -210,12 +211,20 @@ def create_app():
     def health_rerank():
         return jsonify(reranker.ping())
 
+    @app.get("/api/health/embed")
+    def health_embed():
+        return jsonify(embeddings.ping())
+
     @app.get("/api/config")
     def get_config():
         return jsonify({
             "model": Config.OPENAI_MODEL,
             "rerank_model": Config.RERANK_MODEL,
             "rerank_enabled": reranker.available(),
+            "embed_model": Config.EMBED_MODEL,
+            "embed_enabled": embeddings.available(),
+            "retrieval": "hybrid (BM25 + bge-m3) → RRF → rerank" if embeddings.available()
+                         else "BM25 → rerank",
             "default_weights": DEFAULT_WEIGHTS,
             "weight_modes": ["expert", "model", "default"],
             "connectors": connectors.active_connectors(),

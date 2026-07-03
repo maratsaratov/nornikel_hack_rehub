@@ -1,7 +1,7 @@
 """Ядро «Фабрики гипотез»: генерация и ранжирование.
 
 Пайплайн (прозрачный, каждый этап логируется в GenerationRun):
-  1. RAG: chunking → TF-IDF отбор кандидатов → реранкер (rag.py)
+  1. RAG: chunking → BM25 отбор кандидатов (мультиязычно) → реранкер (rag.py)
   2. Веса ранжирования: заданы экспертом ИЛИ предложены моделью (suggest_weights)
   3. Промпт с пронумерованными источниками уходит в DeepSeek (prompts.py, llm.py)
   4. Модель возвращает гипотезы с покомпонентными оценками и ссылками на источники
@@ -88,10 +88,13 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         "title": it["source"].title,
         "type": it["source"].source_type,
         "origin": getattr(it["source"], "origin", None),
-        "tfidf_score": it["tfidf_score"],
+        "bm25_score": it["bm25_score"],
+        "dense_score": it.get("dense_score"),
+        "hybrid_score": it.get("hybrid_score"),
         "rerank_score": it["rerank_score"],
         "score": it["score"],
         "terms": it["terms"],
+        "lang": it.get("lang"),
     } for it in items]
 
     # ── 2. Промпт ────────────────────────────────────────────────────────────
