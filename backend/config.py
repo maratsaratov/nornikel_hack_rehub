@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
@@ -23,6 +25,29 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek/deepseek-v4-flash")
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "7000"))
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
+
+    # OpenAlex
+    OPENALEX_API_URL = os.getenv("OPENALEX_API_URL", "https://api.openalex.org")
+    OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "")
+    OPENALEX_TIMEOUT = float(os.getenv("OPENALEX_TIMEOUT", "12"))
+    OPENALEX_PER_PAGE = int(os.getenv("OPENALEX_PER_PAGE", "6"))
+
+    # Document ingestion
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "storage", "uploads"))
+    MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+    MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+    # Future AI provider layer. The current hypothesis engine still uses llm.py.
+    AI_DEFAULT_PROVIDER = os.getenv("AI_DEFAULT_PROVIDER", "noop")
+    AI_LLM_PROVIDER = os.getenv("AI_LLM_PROVIDER", AI_DEFAULT_PROVIDER)
+    AI_EMBEDDING_PROVIDER = os.getenv("AI_EMBEDDING_PROVIDER", AI_DEFAULT_PROVIDER)
+    AI_EXTRACTION_PROVIDER = os.getenv("AI_EXTRACTION_PROVIDER", AI_DEFAULT_PROVIDER)
+    AI_API_KEY = os.getenv("AI_API_KEY", OPENAI_API_KEY)
+    AI_API_BASE = os.getenv("AI_API_BASE", OPENAI_API_BASE)
+    AI_PARSER_REVIEW_MODEL = os.getenv("AI_PARSER_REVIEW_MODEL", "qwen/qwen3-4b-instruct-2507")
+    AI_PARSER_REVIEW_MAX_TOKENS = int(os.getenv("AI_PARSER_REVIEW_MAX_TOKENS", "900"))
+    AI_PARSER_REVIEW_INPUT_CHARS = int(os.getenv("AI_PARSER_REVIEW_INPUT_CHARS", "14000"))
+    AI_PARSER_REVIEW_TEMPERATURE = float(os.getenv("AI_PARSER_REVIEW_TEMPERATURE", "0.0"))
 
     # ── App behaviour ───────────────────────────────────────────────────────
     SEED_DEMO = _bool("SEED_DEMO", True)

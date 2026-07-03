@@ -21,9 +21,13 @@ npm-debug.log*
 
 # Docker / data
 pgdata/
+backend/storage/uploads/*
+!backend/storage/uploads/.gitkeep
 
 # IDE / OS
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+#other
+Задача 1. Фабрика гипотез/
