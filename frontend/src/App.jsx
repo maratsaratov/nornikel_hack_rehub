@@ -5,6 +5,14 @@ import KnowledgePanel from './components/KnowledgePanel.jsx'
 import ProjectModal from './components/ProjectModal.jsx'
 import GenerationPanel from './components/GenerationPanel.jsx'
 import TargetPanel from './components/TargetPanel.jsx'
+import { readStorage, writeStorage } from './storage.js'
+
+const SELECTED_PROJECT_SCOPE = 'selected-project'
+
+function selectedProjectStorageKey(user) {
+  if (!user?.id) return ''
+  return `rehub:${SELECTED_PROJECT_SCOPE}:${user.id}`
+}
 
 function Icon({ name }) {
   const common = {
@@ -192,6 +200,10 @@ export default function App() {
     () => projects.find((p) => p.id === currentId) || null,
     [projects, currentId],
   )
+  const selectedProjectKey = useMemo(
+    () => selectedProjectStorageKey(currentUser),
+    [currentUser],
+  )
   const canManageProject = Boolean(project?.can_manage_project || project?.current_user_role === 'owner')
   const canManageMembers = Boolean(project?.can_manage_members || project?.current_user_role === 'owner')
 
@@ -200,6 +212,8 @@ export default function App() {
     setProjects(list)
     setCurrentId((prev) => {
       if (list.some((item) => item.id === prev)) return prev
+      const storedId = Number(readStorage(selectedProjectStorageKey(currentUser), null))
+      if (list.some((item) => item.id === storedId)) return storedId
       return list[0]?.id || null
     })
   }
@@ -208,6 +222,11 @@ export default function App() {
     if (!authChecked || !currentUser) return
     loadProjects().catch((e) => flash(e.message, 'err'))
   }, [authChecked, currentUser])
+
+  useEffect(() => {
+    if (!selectedProjectKey || !currentId) return
+    writeStorage(selectedProjectKey, currentId)
+  }, [currentId, selectedProjectKey])
 
   async function reloadKnowledge(projectId = currentId) {
     if (!projectId) {

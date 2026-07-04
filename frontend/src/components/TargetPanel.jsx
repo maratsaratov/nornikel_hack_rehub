@@ -85,6 +85,11 @@ function splitTokens(value, fallback) {
 }
 
 function projectMetrics(project) {
+  const storedMetrics = Array.isArray(project?.metrics)
+    ? project.metrics.map(normalizeMetric).filter(Boolean)
+    : []
+  if (storedMetrics.length > 0) return storedMetrics
+
   const metric = project?.kpi_metric?.trim()
   if (!metric) return DEFAULT_METRICS
 
@@ -110,6 +115,19 @@ function normalizeMetric(metric, index) {
     current: String(metric.current || ''),
     target: String(metric.target || ''),
   }
+}
+
+function prepareMetricsPayload(metrics) {
+  return (Array.isArray(metrics) ? metrics : [])
+    .map((metric, index) => ({
+      id: metric?.id,
+      name: String(metric?.name || '').trim(),
+      unit: String(metric?.unit || '').trim(),
+      current: String(metric?.current || '').trim(),
+      target: String(metric?.target || '').trim(),
+      position: index,
+    }))
+    .filter((metric) => metric.name || metric.unit || metric.current || metric.target)
 }
 
 function normalizeMetrics(value, fallback) {
@@ -260,17 +278,22 @@ export default function TargetPanel({ project, onSave, canEdit = true }) {
     setSaving(true)
 
     try {
-      const primaryMetric = metrics.find((metric) => metric.name.trim()) || metrics[0]
-      // TODO backend: заменить плоские поля проекта на структурированный target payload:
-      // { goal, action: increase|decrease|optimize, metrics: [{ name, unit, current, target }], tags, constraints }.
-      // Сейчас backend умеет хранить только kpi_target, kpi_metric, kpi_direction, domain и constraints.
+      const metricsPayload = prepareMetricsPayload(metrics)
+      const primaryMetric = metricsPayload.find((metric) => metric.name) || metricsPayload[0]
       const saved = await onSave({
         kpi_target: goal.trim(),
-        kpi_metric: primaryMetric?.name?.trim() || '',
+        kpi_metric: primaryMetric?.name || '',
         kpi_direction: action === 'decrease' ? 'decrease' : 'increase',
         domain: tags.join(', '),
         constraints: constraints.join(', '),
+        metrics: metricsPayload,
       })
+      const savedDraft = buildTargetDraft(saved)
+      setGoal(savedDraft.goal)
+      setAction(savedDraft.action)
+      setMetrics(savedDraft.metrics)
+      setTags(savedDraft.tags)
+      setConstraints(savedDraft.constraints)
       setLastSaved(formatSavedDate(saved?.created_at || new Date()))
     } finally {
       setSaving(false)

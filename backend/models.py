@@ -88,7 +88,9 @@ class Project(db.Model):
     runs = db.relationship("GenerationRun", backref="project",
                            cascade="all, delete-orphan", lazy="dynamic")
     documents = db.relationship("SourceDocument", backref="project",
-                                cascade="all, delete-orphan", lazy="dynamic")
+                                 cascade="all, delete-orphan", lazy="dynamic")
+    metrics = db.relationship("ProjectMetric", back_populates="project",
+                              cascade="all, delete-orphan", lazy="dynamic")
     memberships = db.relationship("ProjectMembership", back_populates="project",
                                   cascade="all, delete-orphan", lazy="dynamic")
     created_by = db.relationship("User", back_populates="created_projects",
@@ -101,6 +103,7 @@ class Project(db.Model):
             "title": self.title,
             "kpi_target": self.kpi_target,
             "kpi_metric": self.kpi_metric,
+            "metrics": [m.to_dict() for m in self.metrics.order_by(ProjectMetric.position.asc(), ProjectMetric.id.asc()).all()],
             "kpi_direction": self.kpi_direction,
             "domain": self.domain,
             "constraints": self.constraints,
@@ -111,6 +114,33 @@ class Project(db.Model):
             "current_user_role": current_user_role,
             "can_manage_project": current_user_role == ROLE_OWNER,
             "can_manage_members": current_user_role == ROLE_OWNER,
+        }
+
+
+class ProjectMetric(db.Model):
+    __tablename__ = "project_metrics"
+
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("projects.id"), nullable=False, index=True)
+    name = db.Column(db.String(300), nullable=False)
+    unit = db.Column(db.String(120))
+    current_value = db.Column(db.String(120))
+    target_value = db.Column(db.String(120))
+    position = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    project = db.relationship("Project", back_populates="metrics")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "name": self.name,
+            "unit": self.unit or "",
+            "current": self.current_value or "",
+            "target": self.target_value or "",
+            "position": self.position or 0,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 

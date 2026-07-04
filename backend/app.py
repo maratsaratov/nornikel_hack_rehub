@@ -12,6 +12,7 @@ from config import Config
 from db import db
 from models import (
     Project,
+    ProjectMetric,
     ProjectMembership,
     ROLE_OWNER,
     KnowledgeSource,
@@ -161,6 +162,48 @@ def _query_int(value, default, minimum=None, maximum=None):
     if maximum is not None:
         parsed = min(maximum, parsed)
     return parsed
+
+
+def _compact_metric_value(value, limit=300):
+    text_value = str(value or "").strip()
+    return text_value[:limit]
+
+
+def _normalize_project_metrics(raw_metrics):
+    if not isinstance(raw_metrics, list):
+        return []
+
+    normalized = []
+    for index, item in enumerate(raw_metrics):
+        if not isinstance(item, dict):
+            continue
+        metric = {
+            "name": _compact_metric_value(item.get("name")),
+            "unit": _compact_metric_value(item.get("unit"), 120),
+            "current": _compact_metric_value(item.get("current"), 120),
+            "target": _compact_metric_value(item.get("target"), 120),
+            "position": index,
+        }
+        if any((metric["name"], metric["unit"], metric["current"], metric["target"])):
+            normalized.append(metric)
+    return normalized
+
+
+def _sync_project_metrics(project, raw_metrics):
+    metrics = _normalize_project_metrics(raw_metrics)
+    project.metrics.delete(synchronize_session=False)
+
+    for metric in metrics:
+        db.session.add(ProjectMetric(
+            project_id=project.id,
+            name=metric["name"] or "Метрика эффективности",
+            unit=metric["unit"],
+            current_value=metric["current"],
+            target_value=metric["target"],
+            position=metric["position"],
+        ))
+
+    project.kpi_metric = next((metric["name"] for metric in metrics if metric["name"]), None)
 
 
 def current_user_dependency(request: Request):
@@ -437,6 +480,10 @@ def create_project(d: dict = Body(default={}), user=Depends(current_user_depende
     )
     db.session.add(p)
     db.session.flush()
+    if "metrics" in d:
+        _sync_project_metrics(p, d.get("metrics"))
+    elif d.get("kpi_metric"):
+        _sync_project_metrics(p, [{"name": d.get("kpi_metric")}])
     db.session.add(ProjectMembership(project_id=p.id, user_id=user.id, role=ROLE_OWNER))
     db.session.commit()
     return p.to_dict(ROLE_OWNER)
@@ -454,6 +501,8 @@ def update_project(pid: int, d: dict = Body(default={}), user=Depends(current_us
     for f in ("title", "kpi_target", "kpi_metric", "kpi_direction", "domain", "constraints"):
         if f in d:
             setattr(p, f, d[f])
+    if "metrics" in d:
+        _sync_project_metrics(p, d.get("metrics"))
     db.session.commit()
     return p.to_dict(membership.role)
 
