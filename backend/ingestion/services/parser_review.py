@@ -122,7 +122,7 @@ def build_parser_review_payload(document: SourceDocument) -> dict:
 
 
 def _table_review_sample(table: dict) -> dict:
-    table_json = table.get("table_json") or {}
+    table_json = table.get("table") or table.get("table_json") or {}
     rows = table_json.get("rows") or []
     return {
         "table_name": table.get("table_name"),

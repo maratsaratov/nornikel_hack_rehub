@@ -209,7 +209,7 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 20px;
+  margin-bottom: 10px;
 }
 
 .gen-results-header h2 {
@@ -232,6 +232,39 @@
   font-weight: 700;
   line-height: 1;
   white-space: nowrap;
+}
+
+.gen-results-summary {
+  margin-bottom: 20px;
+}
+
+.sort-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #5e6571;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.sort-control span {
+  color: #7d8491;
+}
+
+.sort-control select {
+  border: 0;
+  background: transparent;
+  color: #17191f;
+  font-size: 12px;
+  font-weight: 800;
+  outline: none;
+  cursor: pointer;
 }
 
 .text-btn {
@@ -336,6 +369,10 @@
   background: #fff;
 }
 
+.gen-card--unseen {
+  border-color: #f3d79f;
+}
+
 .card-top {
   display: flex;
   align-items: flex-start;
@@ -350,6 +387,15 @@
   font-size: 16px;
   font-weight: 800;
   line-height: 1.35;
+}
+
+.card-unseen-star {
+  margin-right: 6px;
+  color: #d38a19;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  vertical-align: baseline;
 }
 
 .rank-score {
@@ -626,6 +672,13 @@
   min-width: 0;
 }
 
+.sb-info__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .sb-info h4 {
   margin-bottom: 5px;
   color: #242832;
@@ -639,6 +692,34 @@
   font-size: 11px;
   font-weight: 600;
   line-height: 1.45;
+}
+
+.sb-remove {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #9aa0aa;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.sb-remove:hover:not(:disabled) {
+  background: #f4f6f8;
+  color: #4f5662;
+}
+
+.sb-remove:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .sb-empty {
@@ -1366,6 +1447,14 @@
     flex-wrap: wrap;
   }
 
+  .gen-results-summary .badge {
+    white-space: normal;
+  }
+
+  .sort-control {
+    order: 3;
+  }
+
   .gen-results-header .spacer {
     display: none;
   }
@@ -1404,8 +1493,15 @@
   }
 
   .gen-results-header h2,
-  .badge {
+  .badge,
+  .sort-control {
     white-space: normal;
+  }
+
+  .sort-control {
+    width: 100%;
+    justify-content: space-between;
+    border-radius: 12px;
   }
 
   .modal--roadmap .modal-body {

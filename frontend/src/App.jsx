@@ -136,8 +136,16 @@ export default function App() {
   }
 
   async function deleteSource(id) {
-    await api.deleteSource(id)
-    setSources((prev) => prev.filter((s) => s.id !== id))
+    try {
+      await api.deleteSource(id)
+      setSources((prev) => prev.filter((s) => s.id !== id))
+      flash('Источник удалён')
+      return true
+    } catch (error) {
+      flash(error.message, 'err')
+      await reloadKnowledge()
+      return false
+    }
   }
 
   async function searchSources(query) {
@@ -159,6 +167,7 @@ export default function App() {
   async function deleteDocument(id) {
     await api.deleteDocument(id)
     setDocuments((prev) => prev.filter((doc) => doc.id !== id))
+    flash('Файл удалён')
   }
 
   const systemState = llmOk === null ? 'Проверка модулей' : llmOk ? 'Система активна' : 'Модель недоступна'
@@ -231,6 +240,8 @@ export default function App() {
               <GenerationPanel 
                 project={project}
                 flash={flash}
+                onDeleteSource={deleteSource}
+                sources={sources}
               />
             )}
             {currentRoute === '#target' && (

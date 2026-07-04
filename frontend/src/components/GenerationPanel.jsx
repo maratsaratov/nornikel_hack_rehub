@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
-import { rankHypotheses } from '../scoring.js'
+import { effectiveScores, rankHypotheses } from '../scoring.js'
 import { Modal } from './ui.jsx'
 import HypothesisRoadmapModal from './HypothesisRoadmapModal.jsx'
 
@@ -17,6 +17,16 @@ const SCORE_ITEMS = [
   { key: 'feasibility', label: 'Реализуемость' },
   { key: 'risk', label: 'Риск' },
 ]
+
+const SORT_OPTIONS = [
+  { key: 'rank', label: 'По рангу' },
+  { key: 'novelty', label: 'По новизне' },
+  { key: 'value', label: 'По ценности' },
+  { key: 'feasibility', label: 'По реализуемости' },
+  { key: 'risk', label: 'По риску' },
+]
+
+const SEEN_HYPOTHESES_STORAGE_KEY = 'hypothesis-factory.seen-hypotheses'
 
 const VERDICTS = [
   { key: 'proposed', label: 'Новая' },
@@ -57,7 +67,44 @@ function retrievedMeta(source) {
   return parts.join(' · ')
 }
 
-export default function GenerationPanel({ project, flash }) {
+function sourceOriginLabel(origin) {
+  if (!origin || origin === 'manual') return ''
+  if (origin === 'openalex') return 'OpenAlex'
+  return String(origin)
+}
+
+function knowledgeSourceMeta(source) {
+  const parts = []
+  if (source?.authors) parts.push(String(source.authors))
+  if (source?.year) parts.push(String(source.year))
+  const origin = sourceOriginLabel(source?.origin)
+  if (origin) parts.push(origin)
+  return parts.join(' · ')
+}
+
+function knowledgeSourceSummary(source) {
+  return source?.excerpt || knowledgeSourceMeta(source) || 'Источник доступен в базе знаний проекта.'
+}
+
+function sortScoreValue(hypothesis, sortKey) {
+  if (sortKey === 'rank') return Number(hypothesis?._composite) || 0
+  return Number(effectiveScores(hypothesis)?.[sortKey]) || 0
+}
+
+function formatWeight(weight) {
+  return String(Number(weight).toFixed(2)).replace('.', ',').replace(/,?0+$/, '')
+}
+
+function formatRankFormula(weights) {
+  return [
+    `${formatWeight(weights.novelty / 100)} × новизна`,
+    `${formatWeight(weights.value / 100)} × ценность`,
+    `${formatWeight(weights.feasibility / 100)} × реализуемость`,
+    `${formatWeight(weights.risk / 100)} × (100 - риск)`,
+  ].join(' + ')
+}
+
+export default function GenerationPanel({ project, flash, onDeleteSource, sources = [] }) {
   const [generating, setGenerating] = useState(false)
   const [params, setParams] = useState({ n: 5, top_k: 6 })
   const [weights, setWeights] = useState({
@@ -70,6 +117,9 @@ export default function GenerationPanel({ project, flash }) {
   const [latestRun, setLatestRun] = useState(null)
   const [openedHypothesisId, setOpenedHypothesisId] = useState(null)
   const [roadmapHypothesisId, setRoadmapHypothesisId] = useState(null)
+  const [sortBy, setSortBy] = useState('rank')
+  const [seenHypothesisIds, setSeenHypothesisIds] = useState(() => new Set())
+  const [deletingSourceId, setDeletingSourceId] = useState(null)
 
   useEffect(() => {
     if (!project) return
@@ -83,6 +133,22 @@ export default function GenerationPanel({ project, flash }) {
     }).catch((error) => flash(error.message, 'err'))
   }, [project, flash])
 
+  useEffect(() => {
+    if (!project?.id) {
+      setSeenHypothesisIds(new Set())
+      return
+    }
+
+    try {
+      const raw = window.localStorage.getItem(SEEN_HYPOTHESES_STORAGE_KEY)
+      const parsed = raw ? JSON.parse(raw) : {}
+      const seen = Array.isArray(parsed[String(project.id)]) ? parsed[String(project.id)] : []
+      setSeenHypothesisIds(new Set(seen.map((value) => Number(value)).filter(Number.isFinite)))
+    } catch (_) {
+      setSeenHypothesisIds(new Set())
+    }
+  }, [project?.id])
+
   const rankedHypotheses = useMemo(() => {
     const apiWeights = {
       novelty: weights.novelty / 100,
@@ -90,8 +156,14 @@ export default function GenerationPanel({ project, flash }) {
       feasibility: weights.feasibility / 100,
       risk: weights.risk / 100,
     }
-    return rankHypotheses(rawHypotheses, apiWeights)
-  }, [rawHypotheses, weights])
+    const ranked = rankHypotheses(rawHypotheses, apiWeights)
+    if (sortBy === 'rank') return ranked
+    return [...ranked].sort((a, b) => {
+      const delta = sortScoreValue(b, sortBy) - sortScoreValue(a, sortBy)
+      if (delta !== 0) return delta
+      return (b._composite || 0) - (a._composite || 0)
+    })
+  }, [rawHypotheses, sortBy, weights])
 
   const openedHypothesis = useMemo(
     () => rankedHypotheses.find((item) => item.id === openedHypothesisId) || null,
@@ -112,6 +184,11 @@ export default function GenerationPanel({ project, flash }) {
     const index = rankedHypotheses.findIndex((item) => item.id === roadmapHypothesisId)
     return index >= 0 ? index + 1 : null
   }, [rankedHypotheses, roadmapHypothesisId])
+
+  const knowledgeSources = useMemo(
+    () => Array.isArray(sources) ? sources : [],
+    [sources],
+  )
 
   const handleGenerate = async () => {
     setGenerating(true)
@@ -187,15 +264,65 @@ export default function GenerationPanel({ project, flash }) {
   const rangeStyle = (value, min, max) => ({
     '--range-value': `${((Number(value) - min) / (max - min)) * 100}%`,
   })
+
+  const markHypothesisSeen = (hypothesisId) => {
+    if (!project?.id || !hypothesisId) return
+
+    setSeenHypothesisIds((prev) => {
+      if (prev.has(hypothesisId)) return prev
+
+      const next = new Set(prev)
+      next.add(hypothesisId)
+
+      try {
+        const raw = window.localStorage.getItem(SEEN_HYPOTHESES_STORAGE_KEY)
+        const parsed = raw ? JSON.parse(raw) : {}
+        parsed[String(project.id)] = Array.from(next)
+        window.localStorage.setItem(SEEN_HYPOTHESES_STORAGE_KEY, JSON.stringify(parsed))
+      } catch (_) {
+        // noop: if storage is unavailable, the star will still disappear during this session
+      }
+
+      return next
+    })
+  }
+
+  const openHypothesis = (hypothesisId) => {
+    markHypothesisSeen(hypothesisId)
+    setOpenedHypothesisId(hypothesisId)
+  }
+
   const openKnowledgeEditor = () => {
     window.location.hash = '#knowledge'
     window.setTimeout(() => {
       document.querySelector('.library-block')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, 0)
   }
+
+  const handleDeleteRetrievedSource = async (source) => {
+    const sourceId = Number(source?.id || source?.source_id)
+    if (!sourceId || deletingSourceId || !onDeleteSource) return
+
+    setDeletingSourceId(sourceId)
+    const deleted = await onDeleteSource(sourceId)
+    if (deleted) {
+      setLatestRun((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          retrieved: (prev.retrieved || []).filter((item) => Number(item?.source_id) !== sourceId),
+        }
+      })
+    }
+    setDeletingSourceId(null)
+  }
+
   const openComparisonPlaceholder = () => flash('Сравнение гипотез появится в следующем обновлении интерфейса.', 'err')
   const openRoadmapPlaceholder = () => flash('Дорожная карта появится после backend-поддержки.', 'err')
-  const openRoadmap = (hypothesisId) => setRoadmapHypothesisId(hypothesisId)
+  const openRoadmap = (hypothesisId) => {
+    markHypothesisSeen(hypothesisId)
+    setRoadmapHypothesisId(hypothesisId)
+  }
   const clearResults = () => {
     setRawHypotheses([])
     setLatestRun(null)
@@ -203,7 +330,7 @@ export default function GenerationPanel({ project, flash }) {
     setRoadmapHypothesisId(null)
   }
 
-  const wFormula = `rank = ${weights.novelty / 100} * novelty + ${weights.value / 100} * value + ${weights.feasibility / 100} * feasibility + ${weights.risk / 100} * (100 - risk)`
+  const wFormula = `Итоговый ранг = ${formatRankFormula(weights)}`
 
   return (
     <div className="gen-layout">
@@ -266,18 +393,32 @@ export default function GenerationPanel({ project, flash }) {
 
         <div className="gen-results-header">
           <h2>Результаты анализа</h2>
-          <span className="badge">Найдено {rankedHypotheses.length} релевантных решений</span>
+          <label className="sort-control">
+            <span>Сортировка</span>
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Сортировка гипотез">
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>{option.label}</option>
+              ))}
+            </select>
+          </label>
           <div className="spacer" />
           <ExportMenu onExport={exportProject} disabled={rankedHypotheses.length === 0} />
           <button className="text-btn" type="button" onClick={openComparisonPlaceholder}><Icon name="chart" /> Сравнение</button>
           <button className="text-btn text-muted" type="button" onClick={clearResults}><Icon name="trash" /> Очистить</button>
         </div>
 
+        <div className="gen-results-summary">
+          <span className="badge">Найдено {rankedHypotheses.length} релевантных решений</span>
+        </div>
+
         <div className="gen-grid">
           {rankedHypotheses.map((h) => (
-            <div key={h.id} className="gen-card">
+            <div key={h.id} className={`gen-card ${seenHypothesisIds.has(h.id) ? '' : 'gen-card--unseen'}`.trim()}>
               <div className="card-top">
-                <h3>{h.statement.split('.')[0]}</h3>
+                <h3>
+                  {!seenHypothesisIds.has(h.id) && <span className="card-unseen-star" title="Гипотеза ещё не открыта">*</span>}
+                  {h.statement.split('.')[0]}
+                </h3>
                 <div className="rank-score">
                   <span className="val">{Math.round(h._composite * 10) || 0}</span>
                   <span className="lbl">РАНГ</span>
@@ -299,7 +440,7 @@ export default function GenerationPanel({ project, flash }) {
 
               <div className="card-actions">
                 <button className="btn-outline btn-outline--roadmap" type="button" onClick={() => openRoadmap(h.id)}><Icon name="route" /> Дорожная карта</button>
-                <button className="btn-outline" type="button" onClick={() => setOpenedHypothesisId(h.id)}><Icon name="folder" /> Открыть</button>
+                <button className="btn-outline" type="button" onClick={() => openHypothesis(h.id)}><Icon name="folder" /> Открыть</button>
                 <button className="btn-outline" type="button" onClick={openRoadmapPlaceholder}><Icon name="route" /> Дорожная карта</button>
               </div>
             </div>
@@ -308,30 +449,44 @@ export default function GenerationPanel({ project, flash }) {
       </div>
 
       <div className="gen-sidebar">
-        <p className="sidebar-hint">Здесь можно ещё раз проверить использованную базу знаний и быстро перейти к её редактированию.</p>
+        <p className="sidebar-hint">Здесь можно проверить текущую базу знаний проекта, удалить лишние источники и быстро перейти к добавлению новых.</p>
 
         <div className="sidebar-panel">
           <div className="sb-header">
             <h3><Icon name="doc" /> БАЗА ЗНАНИЙ</h3>
-            <span className="badge-blue">{latestRun?.retrieved?.length || 0} источников</span>
+            <span className="badge-blue">{knowledgeSources.length} источников</span>
           </div>
 
-          <button className="btn-outline-dashed" type="button" onClick={openKnowledgeEditor}><Icon name="edit" /> Редактировать источники</button>
+          <button className="btn-outline-dashed" type="button" onClick={openKnowledgeEditor}><Icon name="edit" /> Добавить новые</button>
 
-          {(latestRun?.retrieved || []).length > 0 ? (
+          {knowledgeSources.length > 0 ? (
             <div className="sb-list">
-              {(latestRun?.retrieved || []).map((src, index) => (
-                <div key={index} className="sb-item">
+              {knowledgeSources.map((src) => (
+                <div key={src.id} className="sb-item">
                   <div className="sb-icon"><Icon name="doc" /></div>
                   <div className="sb-info">
-                    <h4>{src.title}</h4>
-                    <p>{retrievedMeta(src) || 'Источник вошёл в контекст последнего запуска.'}</p>
+                    <div className="sb-info__top">
+                      <h4>{src.title}</h4>
+                      {src?.id ? (
+                        <button
+                          className="sb-remove"
+                          type="button"
+                          onClick={() => handleDeleteRetrievedSource(src)}
+                          disabled={deletingSourceId === Number(src.id)}
+                          aria-label={`Удалить источник ${src.title}`}
+                          title="Удалить источник"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </div>
+                    <p>{knowledgeSourceSummary(src)}</p>
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="sb-empty">После генерации здесь появятся источники, которые реально попали в retrieval-контекст.</p>
+            <p className="sb-empty">Сейчас в базе знаний нет источников. Перейдите в раздел «База знаний», чтобы добавить новые.</p>
           )}
         </div>
       </div>

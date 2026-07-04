@@ -22,10 +22,30 @@ class Config:
 
     # ── LLM (OpenRouter / DeepSeek) ─────────────────────────────────────────
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://openrouter.ai/api/v1")
+    OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://routerai.ru/api/v1")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek/deepseek-v4-flash")
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "7000"))
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
+    AI_PARSER_AGENT_ENABLED = _bool("AI_PARSER_AGENT_ENABLED", True)
+    AI_PARSER_AGENT_PROVIDER = os.getenv("AI_PARSER_AGENT_PROVIDER", "routerai")
+    AI_PARSER_AGENT_MODEL = os.getenv("AI_PARSER_AGENT_MODEL", "deepseek/deepseek-v4-flash")
+    AI_PARSER_AGENT_MAX_INPUT_CHARS = int(os.getenv("AI_PARSER_AGENT_MAX_INPUT_CHARS", "18000"))
+    AI_PARSER_AGENT_MAX_TOKENS = int(os.getenv("AI_PARSER_AGENT_MAX_TOKENS", "1800"))
+    AI_PARSER_AGENT_TEMPERATURE = float(os.getenv("AI_PARSER_AGENT_TEMPERATURE", "0.1"))
+    AI_PARSER_AGENT_SYSTEM_PROMPT = os.getenv(
+        "AI_PARSER_AGENT_SYSTEM_PROMPT",
+        (
+            "You are a dedicated parser AI agent for scientific and technical documents. "
+            "Improve OCR and parser artifacts, preserve facts, units, formulas, terminology, and structure, "
+            "do not invent missing data, and return only the improved text without commentary."
+        ),
+    )
+    AI_PARSER_REVIEW_ENABLED = AI_PARSER_AGENT_ENABLED
+    AI_PARSER_REVIEW_PROVIDER = AI_PARSER_AGENT_PROVIDER
+    AI_PARSER_REVIEW_MODEL = AI_PARSER_AGENT_MODEL
+    AI_PARSER_REVIEW_INPUT_CHARS = AI_PARSER_AGENT_MAX_INPUT_CHARS
+    AI_PARSER_REVIEW_MAX_TOKENS = AI_PARSER_AGENT_MAX_TOKENS
+    AI_PARSER_REVIEW_TEMPERATURE = AI_PARSER_AGENT_TEMPERATURE
 
     # ── Reranker (OpenRouter -> Cohere rerank) ──────────────────────────────
     # Второй этап RAG: переупорядочивает кандидатов кросс-энкодером.

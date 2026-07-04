@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { api } from '../api.js'
+import { Modal } from './ui.jsx'
 
 const TYPE_META = {
   article: { label: 'Научные статьи', cardLabel: 'Научная статья' },
@@ -62,9 +64,12 @@ function sourceYear(source) {
 function sourceSummary(source) {
   return clipped(
     source?.excerpt
+      || source?.summary
+      || source?.metadata?.summary
       || source?.content
       || source?.abstract
       || source?.description
+      || source?.metadata?.description
       || source?.raw_text_preview
       || 'Описание появится после обработки источника.',
   )
@@ -72,6 +77,35 @@ function sourceSummary(source) {
 
 function sourceAuthor(source) {
   return compactText(source?.authors || source?.metadata?.authors || source?.origin || 'Внутренняя база')
+}
+
+function sourceTypeLabel(source, fallbackLabel = 'Источник') {
+  const rawType = compactText(source?.source_type).toLowerCase()
+  if (rawType === 'report') return 'Отчёт'
+  if (rawType === 'experiment') return 'Эксперимент'
+  if (rawType === 'patent') return 'Патент'
+  if (rawType === 'literature') return 'Литература'
+  return fallbackLabel
+}
+
+function sourceOriginLabel(source) {
+  const origin = compactText(source?.origin).toLowerCase()
+  if (!origin || origin === 'manual') return 'Внутренняя база'
+  if (origin === 'openalex') return 'OpenAlex'
+  return compactText(source?.origin)
+}
+
+function formatTimestamp(value) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return compactText(value)
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
 }
 
 function fileExtension(filename) {
@@ -140,6 +174,8 @@ function makeItems(sources, documents) {
       title: compactText(source.title || source.display_name) || 'Без названия',
       summary: sourceSummary(source),
       author: sourceAuthor(source),
+      origin: source?.origin || 'manual',
+      isExternal: Boolean(source?.is_external || (source?.origin && source.origin !== 'manual')),
       yearKey: year.key,
       yearLabel: year.label,
       novelty: metrics.novelty,
@@ -246,16 +282,24 @@ function FilterRow({ checked, label, count, onChange }) {
   )
 }
 
-function KnowledgeCard({ item, selected, onToggle, onDeleteDocument }) {
+function KnowledgeCard({ item, selected, onToggle, onOpenDetails, onDeleteSource, onDeleteDocument }) {
   const isBook = item.type === 'literature'
 
   return (
     <article className={`source-card ${selected ? 'source-card--selected' : ''}`}>
       <div className="source-card__head">
-        <span className={`source-kind source-kind--${item.type}`}>
-          <Icon name={isBook ? 'book' : 'file'} />
-          {item.label}
-        </span>
+        <div className="source-card__badges">
+          <span className={`source-kind source-kind--${item.type}`}>
+            <Icon name={isBook ? 'book' : 'file'} />
+            {item.label}
+          </span>
+          {item.isExternal && (
+            <span className="source-origin-badge" title="Внешний источник">
+              <span className="source-origin-badge__dot" />
+              Внешний
+            </span>
+          )}
+        </div>
         <label className="select-box" aria-label={`Выбрать ${item.title}`}>
           <input type="checkbox" checked={selected} onChange={onToggle} />
           <span><Icon name="check" /></span>
@@ -278,15 +322,93 @@ function KnowledgeCard({ item, selected, onToggle, onDeleteDocument }) {
 
       <footer className="source-card__footer">
         <span>{item.author}<small>{item.yearLabel}</small></span>
-        {item.kind === 'document' && onDeleteDocument ? (
-          <button className="source-card__delete" type="button" onClick={() => onDeleteDocument(item.entityId)} aria-label="Удалить файл">
-            <Icon name="trash" />
-          </button>
-        ) : (
-          <button type="button">Подробнее</button>
-        )}
+        <div className="source-card__actions">
+          {item.kind === 'source' && (
+            <>
+              <button type="button" onClick={() => onOpenDetails?.(item)}>Подробнее</button>
+              <button className="source-card__delete" type="button" onClick={() => onDeleteSource?.(item)} aria-label="Удалить источник">
+                <Icon name="trash" />
+              </button>
+            </>
+          )}
+          {item.kind === 'document' && onDeleteDocument && (
+            <button className="source-card__delete" type="button" onClick={() => onDeleteDocument(item)} aria-label="Удалить файл">
+              <Icon name="trash" />
+            </button>
+          )}
+        </div>
       </footer>
     </article>
+  )
+}
+
+function SourceDetailsModal({ item, source, loading, error, onClose }) {
+  const details = source || item || {}
+  const metaItems = [
+    { label: 'Тип', value: sourceTypeLabel(details, item?.label || 'Источник') },
+    { label: 'Происхождение', value: sourceOriginLabel(details) },
+    { label: 'Авторы', value: compactText(details?.authors) },
+    { label: 'Год', value: compactText(details?.year) },
+    { label: 'Ссылка', value: compactText(details?.reference) },
+    { label: 'Добавлен', value: formatTimestamp(details?.created_at) },
+  ].filter((entry) => entry.value)
+
+  return (
+    <Modal
+      title={compactText(details?.title) || 'Источник'}
+      onClose={onClose}
+      className="modal--source-details"
+      footer={(
+        <button className="btn primary" type="button" onClick={onClose}>
+          Закрыть
+        </button>
+      )}
+    >
+      <div className="source-details">
+        <div className="source-details__badges">
+          <span className={`source-kind source-kind--${item?.type || 'article'}`}>
+            <Icon name={item?.type === 'literature' ? 'book' : 'file'} />
+            {item?.label || 'Источник'}
+          </span>
+          {(details?.is_external || item?.isExternal) && (
+            <span className="source-origin-badge">
+              <span className="source-origin-badge__dot" />
+              Внешний источник
+            </span>
+          )}
+        </div>
+
+        {metaItems.length > 0 && (
+          <div className="source-details__meta">
+            {metaItems.map((entry) => (
+              <div key={entry.label} className="source-details__meta-item">
+                <span>{entry.label}</span>
+                <strong>{entry.value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {loading && <div className="source-details__state">Загружаем данные источника...</div>}
+        {!loading && error && <div className="source-details__state source-details__state--error">{error}</div>}
+
+        {!loading && (
+          <>
+            <section className="source-details__section">
+              <h4>Краткое описание</h4>
+              <p>{compactText(details?.excerpt) || item?.summary || 'Описание отсутствует.'}</p>
+            </section>
+
+            <section className="source-details__section">
+              <h4>Полный текст</h4>
+              <div className="source-details__content">
+                {String(details?.content || '').trim() || 'Полный текст для этого источника не сохранён.'}
+              </div>
+            </section>
+          </>
+        )}
+      </div>
+    </Modal>
   )
 }
 
@@ -295,6 +417,7 @@ export default function KnowledgePanel({
   documents = [],
   documentTypes = ACCEPTED_DOCUMENT_EXTENSIONS,
   maxUploadMb = MAX_DOCUMENT_UPLOAD_MB,
+  onDelete,
   onSearch,
   onImportOpenAlex,
   onUploadDocument,
@@ -309,6 +432,10 @@ export default function KnowledgePanel({
   const [uploadStatus, setUploadStatus] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [openedSourceItem, setOpenedSourceItem] = useState(null)
+  const [openedSource, setOpenedSource] = useState(null)
+  const [openingSource, setOpeningSource] = useState(false)
+  const [openedSourceError, setOpenedSourceError] = useState('')
   const [typeFilters, setTypeFilters] = useState({
     article: true,
     literature: true,
@@ -324,6 +451,7 @@ export default function KnowledgePanel({
   const fileInputRef = useRef(null)
   const selectedOnceRef = useRef(false)
   const openAlexRequestRef = useRef(0)
+  const sourceRequestRef = useRef(0)
   const acceptedDocumentExtensions = useMemo(() => {
     const normalized = (documentTypes || [])
       .map((ext) => String(ext || '').toLowerCase().replace(/^\./, ''))
@@ -424,6 +552,62 @@ export default function KnowledgePanel({
       filteredItems.forEach((item) => next.add(item.id))
       return next
     })
+  }
+
+  function clearSelection(itemId) {
+    setSelectedIds((prev) => {
+      if (!prev.has(itemId)) return prev
+      const next = new Set(prev)
+      next.delete(itemId)
+      return next
+    })
+  }
+
+  function closeSourceDetails() {
+    sourceRequestRef.current += 1
+    setOpenedSourceItem(null)
+    setOpenedSource(null)
+    setOpeningSource(false)
+    setOpenedSourceError('')
+  }
+
+  async function openSourceDetails(item) {
+    if (!item || item.kind !== 'source') return
+
+    const requestId = sourceRequestRef.current + 1
+    sourceRequestRef.current = requestId
+    setOpenedSourceItem(item)
+    setOpenedSource(null)
+    setOpeningSource(true)
+    setOpenedSourceError('')
+
+    try {
+      const payload = await api.getSource(item.entityId)
+      if (sourceRequestRef.current !== requestId) return
+      setOpenedSource(payload)
+    } catch (error) {
+      if (sourceRequestRef.current !== requestId) return
+      setOpenedSourceError(error.message)
+    } finally {
+      if (sourceRequestRef.current === requestId) {
+        setOpeningSource(false)
+      }
+    }
+  }
+
+  async function handleDeleteSource(item) {
+    if (!item || !onDelete) return
+    if (!window.confirm(`Удалить источник «${item.title}»?`)) return
+    await onDelete(item.entityId)
+    clearSelection(item.id)
+    if (openedSourceItem?.id === item.id) closeSourceDetails()
+  }
+
+  async function handleDeleteDocument(item) {
+    if (!item || !onDeleteDocument) return
+    if (!window.confirm(`Удалить файл «${item.title}»?`)) return
+    await onDeleteDocument(item.entityId)
+    clearSelection(item.id)
   }
 
   async function handleFile(file) {
@@ -688,7 +872,9 @@ export default function KnowledgePanel({
                   item={item}
                   selected={selectedIds.has(item.id)}
                   onToggle={() => toggleSelection(item.id)}
-                  onDeleteDocument={onDeleteDocument}
+                  onOpenDetails={openSourceDetails}
+                  onDeleteSource={handleDeleteSource}
+                  onDeleteDocument={handleDeleteDocument}
                 />
               ))}
             </div>
@@ -704,6 +890,16 @@ export default function KnowledgePanel({
           )}
         </div>
       </section>
+
+      {openedSourceItem && (
+        <SourceDetailsModal
+          item={openedSourceItem}
+          source={openedSource}
+          loading={openingSource}
+          error={openedSourceError}
+          onClose={closeSourceDetails}
+        />
+      )}
     </section>
   )
 }

@@ -499,6 +499,14 @@ def import_openalex_source(pid: int, d: dict = Body(default={})):
     return JSONResponse({"created": True, "source": s.to_dict(with_content=False)}, status_code=201)
 
 
+@app.get("/api/sources/{sid}")
+def get_source(sid: int):
+    s = db.session.get(KnowledgeSource, sid)
+    if not s:
+        return JSONResponse({"error": "Источник не найден"}, status_code=404)
+    return s.to_dict(with_content=True)
+
+
 @app.post("/api/projects/{pid}/knowledge/acquire")
 def acquire_knowledge(pid: int, d: dict = Body(default={})):
     p = db.session.get(Project, pid)

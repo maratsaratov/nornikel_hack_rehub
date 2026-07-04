@@ -134,6 +134,8 @@ class SourceDocument(db.Model):
         preview = " ".join(raw.split())
         if len(preview) > 500:
             preview = preview[:497].rstrip() + "..."
+        metadata = self.metadata_json or {}
+        summary = metadata.get("summary") or metadata.get("description")
         data = {
             "id": self.id,
             "project_id": self.project_id,
@@ -141,7 +143,9 @@ class SourceDocument(db.Model):
             "stored_path": self.stored_path,
             "file_type": self.file_type,
             "parse_status": self.parse_status,
-            "metadata": self.metadata_json or {},
+            "metadata": metadata,
+            "summary": summary,
+            "description": summary,
             "raw_text_preview": preview,
             "chunk_count": self.chunks.count() if self.id else 0,
             "table_count": self.tables.count() if self.id else 0,
