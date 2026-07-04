@@ -361,16 +361,58 @@
 
 .gen-card {
   min-height: 268px;
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   padding: 22px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   background: #fff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.gen-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: transparent;
 }
 
 .gen-card--unseen {
   border-color: #f3d79f;
+}
+
+.gen-card--status-review {
+  border-color: rgba(222, 162, 64, 0.4);
+  background: linear-gradient(180deg, #fffaf1 0%, #ffffff 34%);
+  box-shadow: 0 16px 28px rgba(194, 141, 40, 0.08);
+}
+
+.gen-card--status-review::before {
+  background: #d38a19;
+}
+
+.gen-card--status-accepted {
+  border-color: rgba(54, 148, 92, 0.34);
+  background: linear-gradient(180deg, #f5fcf7 0%, #ffffff 36%);
+  box-shadow: 0 16px 28px rgba(47, 125, 78, 0.09);
+}
+
+.gen-card--status-accepted::before {
+  background: #2f8e56;
+}
+
+.gen-card--status-rejected {
+  border-color: rgba(208, 86, 77, 0.34);
+  background: linear-gradient(180deg, #fff6f5 0%, #ffffff 36%);
+  box-shadow: 0 16px 28px rgba(190, 80, 71, 0.08);
+}
+
+.gen-card--status-rejected::before {
+  background: #d0564d;
 }
 
 .card-top {
@@ -379,6 +421,76 @@
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 12px;
+}
+
+.card-top__main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.gen-card__status-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.gen-card__status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  border: 1px solid #d7dde5;
+  border-radius: 999px;
+  background: #f7f9fb;
+  color: #617082;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.gen-card__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(17, 24, 39, 0.08);
+}
+
+.gen-card__status-pill--proposed {
+  border-color: #d7dde5;
+  background: #f7f9fb;
+  color: #617082;
+}
+
+.gen-card__status-pill--review {
+  border-color: rgba(222, 162, 64, 0.3);
+  background: rgba(250, 236, 204, 0.65);
+  color: #a46612;
+}
+
+.gen-card__status-pill--review .gen-card__status-dot {
+  box-shadow: 0 0 0 4px rgba(211, 138, 25, 0.18);
+}
+
+.gen-card__status-pill--accepted {
+  border-color: rgba(54, 148, 92, 0.28);
+  background: rgba(218, 244, 226, 0.78);
+  color: #256b42;
+}
+
+.gen-card__status-pill--accepted .gen-card__status-dot {
+  box-shadow: 0 0 0 4px rgba(47, 142, 86, 0.16);
+}
+
+.gen-card__status-pill--rejected {
+  border-color: rgba(208, 86, 77, 0.28);
+  background: rgba(251, 224, 220, 0.82);
+  color: #a13e36;
+}
+
+.gen-card__status-pill--rejected .gen-card__status-dot {
+  box-shadow: 0 0 0 4px rgba(208, 86, 77, 0.16);
 }
 
 .card-top h3 {

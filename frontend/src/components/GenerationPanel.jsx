@@ -35,6 +35,21 @@ const VERDICTS = [
   { key: 'rejected', label: 'Опровергнута' },
 ]
 
+const VERDICT_LABELS = Object.fromEntries(
+  VERDICTS.map((verdict) => [verdict.key, verdict.label]),
+)
+
+function hypothesisStatusMeta(status) {
+  const key = VERDICT_LABELS[status] ? status : 'proposed'
+
+  return {
+    key,
+    label: VERDICT_LABELS[key] || VERDICT_LABELS.proposed || 'Status',
+    cardClassName: key === 'proposed' ? '' : `gen-card--status-${key}`,
+    pillClassName: `gen-card__status-pill gen-card__status-pill--${key}`,
+  }
+}
+
 function Icon({ name }) {
   const common = {
     width: 16,
@@ -515,13 +530,28 @@ export default function GenerationPanel({
         </div>
 
         <div className="gen-grid">
-          {rankedHypotheses.map((h) => (
-            <div key={h.id} className={`gen-card ${seenHypothesisIds.has(h.id) ? '' : 'gen-card--unseen'}`.trim()}>
+          {rankedHypotheses.map((h) => {
+            const statusMeta = hypothesisStatusMeta(h.status)
+
+            return (
+            <div
+              key={h.id}
+              className={`gen-card ${seenHypothesisIds.has(h.id) ? '' : 'gen-card--unseen'} ${statusMeta.cardClassName}`.trim()}
+              data-status={statusMeta.key}
+            >
               <div className="card-top">
-                <h3>
+                <div className="card-top__main">
+                  <div className="gen-card__status-row">
+                    <span className={statusMeta.pillClassName}>
+                      <span className="gen-card__status-dot" aria-hidden="true" />
+                      {statusMeta.label}
+                    </span>
+                  </div>
+                  <h3>
                   {!seenHypothesisIds.has(h.id) && <span className="card-unseen-star" title="Гипотеза ещё не открыта">*</span>}
                   {h.statement.split('.')[0]}
                 </h3>
+                </div>
                 <div className="rank-score">
                   <span className="val">{Math.round(h._composite * 10) || 0}</span>
                   <span className="lbl">РАНГ</span>
@@ -547,7 +577,8 @@ export default function GenerationPanel({
                 <button className="btn-outline" type="button" onClick={openRoadmapPlaceholder}><Icon name="route" /> Дорожная карта</button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 

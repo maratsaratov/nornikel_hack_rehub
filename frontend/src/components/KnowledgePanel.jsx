@@ -16,25 +16,220 @@ const YEAR_META = {
   earlier: 'Ранее',
 }
 
-const CARD_METRICS = [
-  { novelty: 'Высокая', value: 9 },
-  { novelty: 'Средняя', value: 8 },
-  { novelty: 'Низкая', value: 9 },
-  { novelty: 'Высокая', value: 7 },
-  { novelty: 'Экстремальная', value: 10 },
-  { novelty: 'Средняя', value: 9 },
-]
-
 const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt']
 const MAX_DOCUMENT_UPLOAD_MB = 25
 const EMPTY_OPENALEX_RESULTS = { query: '', local: [], external: [], external_error: null }
 const MIN_OPENALEX_QUERY_LENGTH = 2
 const OPENALEX_SEARCH_DEBOUNCE_MS = 320
+const STOP_WORDS = new Set([
+  'and', 'are', 'but', 'for', 'from', 'into', 'not', 'that', 'the', 'their', 'this', 'with',
+  'это', 'как', 'для', 'или', 'при', 'под', 'над', 'без', 'что', 'его', 'ее', 'её', 'они',
+  'она', 'оно', 'так', 'также', 'если', 'либо', 'где', 'чем', 'чтобы', 'когда', 'после',
+  'перед', 'между', 'через', 'очень', 'были', 'было', 'быть', 'есть', 'нет', 'про', 'the',
+  'данные', 'данных', 'метод', 'методы', 'analysis', 'study', 'using',
+])
 
 function compactText(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(', ')
   if (value === null || value === undefined) return ''
   return String(value).replace(/\s+/g, ' ').trim()
+}
+
+function clampScore(value, min = 0, max = 10) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return min
+  return Math.max(min, Math.min(max, numeric))
+}
+
+function roundScore(value) {
+  return Math.round(clampScore(value) * 10) / 10
+}
+
+function formatTenScore(value) {
+  const numeric = roundScore(value)
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1)
+}
+
+function normalizeYearValue(source) {
+  const rawYear = Number(source?.year || source?.publication_year || source?.metadata?.year)
+  return Number.isFinite(rawYear) ? rawYear : null
+}
+
+function tokenizeText(value) {
+  return compactText(value)
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .match(/[a-zа-я0-9-]+/gi)?.filter((token) => (
+      token.length >= 3
+      && !STOP_WORDS.has(token)
+      && !/^\d+$/.test(token)
+    )) || []
+}
+
+function uniqueTokens(value) {
+  return [...new Set(tokenizeText(value))]
+}
+
+function scoreNoveltyLabel(score) {
+  if (score >= 8.5) return 'Очень высокая'
+  if (score >= 6.5) return 'Высокая'
+  if (score >= 4.5) return 'Средняя'
+  if (score >= 2.5) return 'Низкая'
+  return 'Очень низкая'
+}
+
+function evidenceKey(entry) {
+  const explicit = compactText(entry?.source_key).toLowerCase()
+  if (explicit) return explicit
+  const kind = compactText(entry?.source_kind || 'source').toLowerCase()
+  const sourceId = Number(entry?.source_id)
+  if (Number.isFinite(sourceId) && sourceId > 0) {
+    return `${kind}:${sourceId}`
+  }
+  return ''
+}
+
+function buildUsageMap(hypotheses, runs) {
+  const usage = new Map()
+  ;(hypotheses || []).forEach((hypothesis) => {
+    const seenInHypothesis = new Set()
+    ;(hypothesis?.evidence || []).forEach((entry) => {
+      const key = evidenceKey(entry)
+      if (key) seenInHypothesis.add(key)
+    })
+    seenInHypothesis.forEach((key) => {
+      usage.set(key, (usage.get(key) || 0) + 1)
+    })
+  })
+  ;(runs || []).forEach((run) => {
+    const seenInRun = new Set()
+    ;(run?.retrieved || []).forEach((entry) => {
+      const key = evidenceKey(entry)
+      if (key) seenInRun.add(key)
+    })
+    seenInRun.forEach((key) => {
+      usage.set(key, (usage.get(key) || 0) + 1)
+    })
+  })
+  return usage
+}
+
+function addProjectTerms(map, value, weight) {
+  uniqueTokens(value).forEach((token) => {
+    map.set(token, (map.get(token) || 0) + weight)
+  })
+}
+
+function buildProjectTerms(project) {
+  const terms = new Map()
+  addProjectTerms(terms, project?.kpi_target, 3.2)
+  addProjectTerms(terms, project?.kpi_metric, 2.4)
+  addProjectTerms(terms, project?.domain, 2.4)
+  addProjectTerms(terms, project?.constraints, 1.2)
+  return terms
+}
+
+function hasTokenMatch(tokens, term) {
+  const root = term.length >= 6 ? term.slice(0, 5) : term
+  return tokens.some((token) => (
+    token === term
+    || token.startsWith(root)
+    || term.startsWith(token.slice(0, Math.min(token.length, 5)))
+  ))
+}
+
+function freshnessScore(year) {
+  if (!year) return 4.5
+  const currentYear = new Date().getUTCFullYear()
+  const diff = Math.max(0, currentYear - year)
+  if (diff <= 0) return 10
+  if (diff === 1) return 9
+  if (diff === 2) return 8
+  if (diff === 3) return 7
+  if (diff === 4) return 6
+  if (diff === 5) return 5
+  if (diff <= 8) return 4
+  if (diff <= 12) return 3
+  return 2
+}
+
+function jaccardSimilarity(left, right) {
+  if (!left.size || !right.size) return 0
+  let overlap = 0
+  left.forEach((token) => {
+    if (right.has(token)) overlap += 1
+  })
+  return overlap / (left.size + right.size - overlap)
+}
+
+function uniquenessScore(tokens, allTokenSets, currentIndex) {
+  if (!tokens.size) return 4
+  if (allTokenSets.length <= 1) return 7.5
+
+  let maxSimilarity = 0
+  allTokenSets.forEach((otherTokens, index) => {
+    if (index === currentIndex || !otherTokens.size) return
+    maxSimilarity = Math.max(maxSimilarity, jaccardSimilarity(tokens, otherTokens))
+  })
+
+  return roundScore(4 + (1 - maxSimilarity) * 6)
+}
+
+function relevanceScore(tokens, projectTerms) {
+  if (!tokens.length) return 0
+  if (!projectTerms.size) return 5
+
+  let totalWeight = 0
+  let matchedWeight = 0
+  let matchedTerms = 0
+
+  projectTerms.forEach((weight, term) => {
+    totalWeight += weight
+    if (hasTokenMatch(tokens, term)) {
+      matchedWeight += weight
+      matchedTerms += 1
+    }
+  })
+
+  if (!matchedTerms || !totalWeight) return 1.5
+  const ratio = matchedWeight / totalWeight
+  return roundScore(2.5 + ratio * 6 + Math.min(1.5, matchedTerms * 0.35))
+}
+
+function countNumbers(text) {
+  return compactText(text).match(/\b\d+(?:[.,]\d+)?\b/g)?.length || 0
+}
+
+function factualScore(item) {
+  const corpus = compactText([
+    item?.title,
+    item?.summary,
+    item?.excerpt,
+    item?.rawTextPreview,
+    item?.reference,
+  ].filter(Boolean).join(' '))
+
+  if (!corpus) return 0
+
+  let score = 0
+  if (corpus.length >= 80) score += 2
+  if (corpus.length >= 220) score += 1.5
+  if (corpus.length >= 500) score += 1
+  score += Math.min(2.5, countNumbers(corpus) * 0.35)
+  if (compactText(item?.reference)) score += 1.5
+  if (item?.kind === 'document' && Number(item?.tableCount) > 0) score += 2
+  if (['dataset', 'report', 'experiment', 'patent'].includes(item?.sourceType)) score += 1
+  if (['xlsx', 'csv'].includes(compactText(item?.fileType).toLowerCase())) score += 1
+
+  return roundScore(score)
+}
+
+function usageScore(count) {
+  if (count >= 4) return 10
+  if (count === 3) return 9
+  if (count === 2) return 8
+  if (count === 1) return 6
+  return 0
 }
 
 function clipped(value, limit = 165) {
@@ -66,7 +261,7 @@ function normalizeType(source, index) {
 }
 
 function sourceYear(source) {
-  const rawYear = Number(source?.year || source?.publication_year || source?.metadata?.year)
+  const rawYear = normalizeYearValue(source)
   if (rawYear >= 2024 && rawYear <= 2026) {
     return { key: String(rawYear), label: String(rawYear) }
   }
@@ -184,50 +379,96 @@ function buildOpenAlexResults(query, payload = {}) {
   }
 }
 
-function makeItems(sources, documents) {
-  const sourceItems = sources.map((source, index) => {
-    const type = normalizeType(source, index)
-    const metrics = CARD_METRICS[index % CARD_METRICS.length]
-    const year = sourceYear(source)
+function makeItems(project, sources, documents, hypotheses, runs) {
+  const baseItems = [
+    ...sources.map((source, index) => {
+      const type = normalizeType(source, index)
+      const year = sourceYear(source)
+      return {
+        id: `source-${source.id}`,
+        retrievalKey: `source:${source.id}`,
+        entityId: source.id,
+        kind: 'source',
+        type,
+        label: TYPE_META[type].cardLabel,
+        title: compactText(source.title || source.display_name) || 'Без названия',
+        summary: sourceSummary(source),
+        author: sourceAuthor(source),
+        origin: source?.origin || 'manual',
+        isExternal: Boolean(source?.is_external || (source?.origin && source.origin !== 'manual')),
+        yearKey: year.key,
+        yearLabel: year.label,
+        yearValue: normalizeYearValue(source),
+        sourceType: compactText(source?.source_type).toLowerCase(),
+        fileType: '',
+        reference: compactText(source?.reference || source?.doi),
+        excerpt: compactText(source?.excerpt || source?.abstract || source?.description || source?.content),
+        rawTextPreview: compactText(source?.content),
+        tableCount: 0,
+      }
+    }),
+    ...documents.map((document) => {
+      const year = sourceYear(document)
+      return {
+        id: `document-${document.id}`,
+        retrievalKey: `document:${document.id}`,
+        entityId: document.id,
+        kind: 'document',
+        type: 'article',
+        label: compactText(document.file_type).toUpperCase() || 'Файл',
+        title: compactText(document.metadata?.title || document.filename) || 'Загруженный файл',
+        summary: sourceSummary(document),
+        author: sourceAuthor(document),
+        origin: 'upload',
+        isExternal: false,
+        yearKey: year.key,
+        yearLabel: year.label,
+        yearValue: normalizeYearValue(document),
+        sourceType: compactText(document?.metadata?.source_type || document?.source_type || document?.file_type).toLowerCase(),
+        fileType: compactText(document?.file_type).toLowerCase(),
+        reference: compactText(document?.metadata?.references || document?.metadata?.keywords),
+        excerpt: compactText(document?.summary || document?.description || document?.metadata?.description),
+        rawTextPreview: compactText(document?.raw_text_preview),
+        tableCount: Number(document?.table_count) || 0,
+      }
+    }),
+  ]
+
+  const usageByKey = buildUsageMap(hypotheses, runs)
+  const projectTerms = buildProjectTerms(project)
+  const tokenPayloads = baseItems.map((item) => {
+    const tokens = uniqueTokens([
+      item.title,
+      item.summary,
+      item.excerpt,
+      item.rawTextPreview,
+      item.reference,
+      item.sourceType,
+    ].filter(Boolean).join(' '))
     return {
-      id: `source-${source.id}`,
-      entityId: source.id,
-      kind: 'source',
-      type,
-      label: TYPE_META[type].cardLabel,
-      title: compactText(source.title || source.display_name) || 'Без названия',
-      summary: sourceSummary(source),
-      author: sourceAuthor(source),
-      origin: source?.origin || 'manual',
-      isExternal: Boolean(source?.is_external || (source?.origin && source.origin !== 'manual')),
-      yearKey: year.key,
-      yearLabel: year.label,
-      novelty: metrics.novelty,
-      value: metrics.value,
+      list: tokens,
+      set: new Set(tokens),
     }
   })
+  const allTokenSets = tokenPayloads.map((entry) => entry.set)
 
-  const documentItems = documents.map((document, index) => {
-    const itemIndex = sources.length + index
-    const metrics = CARD_METRICS[itemIndex % CARD_METRICS.length]
-    const year = sourceYear(document)
+  return baseItems.map((item, index) => {
+    const freshness = freshnessScore(item.yearValue)
+    const uniqueness = uniquenessScore(tokenPayloads[index].set, allTokenSets, index)
+    const noveltyScore = roundScore(freshness * 0.55 + uniqueness * 0.45)
+    const relevance = relevanceScore(tokenPayloads[index].list, projectTerms)
+    const factual = factualScore(item)
+    const usageCount = usageByKey.get(item.retrievalKey) || 0
+    const valueScore = roundScore(relevance * 0.6 + factual * 0.25 + usageScore(usageCount) * 0.15)
+
     return {
-      id: `document-${document.id}`,
-      entityId: document.id,
-      kind: 'document',
-      type: 'article',
-      label: compactText(document.file_type).toUpperCase() || 'Файл',
-      title: compactText(document.metadata?.title || document.filename) || 'Загруженный файл',
-      summary: sourceSummary(document),
-      author: sourceAuthor(document),
-      yearKey: year.key,
-      yearLabel: year.label,
-      novelty: metrics.novelty,
-      value: metrics.value,
+      ...item,
+      novelty: scoreNoveltyLabel(noveltyScore),
+      noveltyScore,
+      value: valueScore,
+      usageCount,
     }
   })
-
-  return [...sourceItems, ...documentItems]
 }
 
 function Icon({ name }) {
@@ -340,7 +581,7 @@ function KnowledgeCard({ item, selected, onToggle, onOpenDetails, onDeleteSource
         </div>
         <div>
           <span>Ценность</span>
-          <strong>{item.value}/10</strong>
+          <strong>{formatTenScore(item.value)}/10</strong>
         </div>
       </div>
 
@@ -370,6 +611,9 @@ function KnowledgeCard({ item, selected, onToggle, onOpenDetails, onDeleteSource
 function SourceDetailsModal({ item, source, loading, error, onClose }) {
   const details = source || item || {}
   const metaItems = [
+    { label: 'Новизна', value: item?.noveltyScore ? `${item.novelty} (${formatTenScore(item.noveltyScore)}/10)` : item?.novelty },
+    { label: 'Ценность', value: Number.isFinite(Number(item?.value)) ? `${formatTenScore(item.value)}/10` : '' },
+    { label: 'Использован', value: String(item?.usageCount ?? 0) },
     { label: 'Тип', value: sourceTypeLabel(details, item?.label || 'Источник') },
     { label: 'Происхождение', value: sourceOriginLabel(details) },
     { label: 'Авторы', value: compactText(details?.authors) },
@@ -440,6 +684,9 @@ function SourceDetailsModal({ item, source, loading, error, onClose }) {
 function DocumentDetailsModal({ item, document, loading, error, onClose }) {
   const details = document || item || {}
   const metaItems = [
+    { label: 'Новизна', value: item?.noveltyScore ? `${item.novelty} (${formatTenScore(item.noveltyScore)}/10)` : item?.novelty },
+    { label: 'Ценность', value: Number.isFinite(Number(item?.value)) ? `${formatTenScore(item.value)}/10` : '' },
+    { label: 'Использован', value: String(item?.usageCount ?? 0) },
     { label: 'Тип файла', value: compactText(details?.file_type || item?.label).toUpperCase() },
     { label: 'Статус', value: documentParseStatusLabel(details?.parse_status) },
     { label: 'Авторы', value: compactText(details?.metadata?.authors || details?.authors) },
@@ -531,7 +778,8 @@ function DocumentDetailsModal({ item, document, loading, error, onClose }) {
 }
 
 export default function KnowledgePanel({
-  sources,
+  project,
+  sources = [],
   documents = [],
   documentTypes = ACCEPTED_DOCUMENT_EXTENSIONS,
   maxUploadMb = MAX_DOCUMENT_UPLOAD_MB,
@@ -554,6 +802,8 @@ export default function KnowledgePanel({
   const [openedSource, setOpenedSource] = useState(null)
   const [openingSource, setOpeningSource] = useState(false)
   const [openedSourceError, setOpenedSourceError] = useState('')
+  const [hypotheses, setHypotheses] = useState([])
+  const [runs, setRuns] = useState([])
   const [typeFilters, setTypeFilters] = useState({
     article: true,
     literature: true,
@@ -569,6 +819,8 @@ export default function KnowledgePanel({
   const fileInputRef = useRef(null)
   const selectedOnceRef = useRef(false)
   const openAlexRequestRef = useRef(0)
+  const hypothesesRequestRef = useRef(0)
+  const runsRequestRef = useRef(0)
   const sourceRequestRef = useRef(0)
   const acceptedDocumentExtensions = useMemo(() => {
     const normalized = (documentTypes || [])
@@ -583,7 +835,10 @@ export default function KnowledgePanel({
   const maxDocumentUploadMb = Number(maxUploadMb) > 0 ? Number(maxUploadMb) : MAX_DOCUMENT_UPLOAD_MB
   const maxDocumentUploadBytes = maxDocumentUploadMb * 1024 * 1024
 
-  const libraryItems = useMemo(() => makeItems(sources, documents), [sources, documents])
+  const libraryItems = useMemo(
+    () => makeItems(project, sources, documents, hypotheses, runs),
+    [project, sources, documents, hypotheses, runs],
+  )
   const filterCounts = useMemo(() => {
     const counts = {
       article: 0,
@@ -609,6 +864,63 @@ export default function KnowledgePanel({
     selectedOnceRef.current = true
     setSelectedIds(new Set([libraryItems[0].id]))
   }, [libraryItems])
+
+  useEffect(() => {
+    if (!project?.id) {
+      setHypotheses([])
+      setRuns([])
+      return undefined
+    }
+
+    const requestId = hypothesesRequestRef.current + 1
+    hypothesesRequestRef.current = requestId
+
+    api.listHypotheses(project.id)
+      .then((items) => {
+        if (hypothesesRequestRef.current === requestId) {
+          setHypotheses(Array.isArray(items) ? items : [])
+        }
+      })
+      .catch(() => {
+        if (hypothesesRequestRef.current === requestId) {
+          setHypotheses([])
+        }
+      })
+
+    return () => {
+      if (hypothesesRequestRef.current === requestId) {
+        hypothesesRequestRef.current += 1
+      }
+    }
+  }, [project?.id])
+
+  useEffect(() => {
+    if (!project?.id) {
+      setRuns([])
+      return undefined
+    }
+
+    const requestId = runsRequestRef.current + 1
+    runsRequestRef.current = requestId
+
+    api.listRuns(project.id)
+      .then((items) => {
+        if (runsRequestRef.current === requestId) {
+          setRuns(Array.isArray(items) ? items : [])
+        }
+      })
+      .catch(() => {
+        if (runsRequestRef.current === requestId) {
+          setRuns([])
+        }
+      })
+
+    return () => {
+      if (runsRequestRef.current === requestId) {
+        runsRequestRef.current += 1
+      }
+    }
+  }, [project?.id])
 
   useEffect(() => {
     const term = doi.trim()
