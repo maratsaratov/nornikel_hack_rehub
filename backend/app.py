@@ -26,6 +26,7 @@ import reranker
 import embeddings
 import connectors
 import export
+import local_kb
 from ingestion.service import (
     FileTooLargeError,
     IngestionError,
@@ -216,6 +217,16 @@ async def lifespan(_app: FastAPI):
     db.init_app(Config.SQLALCHEMY_DATABASE_URI, Config.SQLALCHEMY_ENGINE_OPTIONS)
     db.create_all()
     _ensure_columns()
+    kb_status = local_kb.status()
+    if kb_status["loaded"]:
+        logger.info(
+            "Local knowledge loaded from %s (%s files, %s sources).",
+            kb_status["directory"],
+            kb_status["file_count"],
+            kb_status["source_count"],
+        )
+    elif kb_status["errors"]:
+        logger.warning("Local knowledge library has load errors: %s", kb_status["errors"])
     if Config.SEED_DEMO:
         try:
             from seed import seed_if_empty
@@ -263,7 +274,17 @@ async def limit_upload_size(request: Request, call_next):
 # ── Health / config ─────────────────────────────────────────────────────
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "model": Config.OPENAI_MODEL}
+    kb_status = local_kb.status()
+    return {
+        "status": "ok",
+        "model": Config.OPENAI_MODEL,
+        "local_knowledge": {
+            "enabled": kb_status["enabled"],
+            "loaded": kb_status["loaded"],
+            "file_count": kb_status["file_count"],
+            "source_count": kb_status["source_count"],
+        },
+    }
 
 
 @app.get("/api/health/llm")
@@ -295,6 +316,7 @@ def get_config():
         "weight_modes": ["expert", "model", "default"],
         "connectors": connectors.active_connectors(),
         "default_sources": connectors.default_sources(),
+        "local_knowledge": local_kb.status(),
         "max_upload_mb": Config.MAX_UPLOAD_MB,
         "supported_document_types": ["pdf", "docx", "xlsx", "csv", "txt"],
     }

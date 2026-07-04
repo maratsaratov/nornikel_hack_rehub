@@ -4,17 +4,18 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
+WORKDIR /app/backend
 
 # System deps for scientific stack + psycopg2
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-COPY . .
+COPY backend/ .
+COPY lib /app/lib
 
 EXPOSE 5000
 

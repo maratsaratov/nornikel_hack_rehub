@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR)
 
 
 def _bool(name: str, default: bool = False) -> bool:
@@ -72,6 +73,8 @@ class Config:
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(BASE_DIR, "storage", "uploads"))
     MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
     MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+    LOCAL_KB_ENABLED = _bool("LOCAL_KB_ENABLED", True)
+    LOCAL_KB_DIR = os.getenv("LOCAL_KB_DIR", os.path.join(ROOT_DIR, "lib"))
 
     # ── App behaviour ───────────────────────────────────────────────────────
     SEED_DEMO = _bool("SEED_DEMO", True)

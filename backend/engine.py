@@ -10,6 +10,7 @@
 from db import db
 from models import Project, Hypothesis, GenerationRun, composite_score, DEFAULT_WEIGHTS
 import rag
+import local_kb
 from prompts import build_generation_prompt, build_weight_prompt
 from llm import complete_json
 from llm_schemas import GENERATION_RESPONSE_SCHEMA, WEIGHT_RESPONSE_SCHEMA
@@ -100,7 +101,7 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         weights, weight_mode = dict(DEFAULT_WEIGHTS), "default"
     weights = _normalize_weights(weights)
 
-    sources = project.sources.all()
+    sources = project.sources.all() + local_kb.get_sources()
     query = _build_query(project, topic)
 
     # ── 1. RAG: TF-IDF → реранкер ────────────────────────────────────────────
