@@ -42,16 +42,30 @@ def _extract_json(text: str):
         raise
 
 
+def _response_format(schema: dict = None, schema_name: str = "response"):
+    if schema:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+        }
+    return {"type": "json_object"}
+
+
 def complete_json(system: str, user: str, max_tokens: int = None,
-                  temperature: float = None) -> dict:
-    """Вызов модели с принудительным JSON-выводом. Возвращает (data, usage)."""
+                  temperature: float = None, schema: dict = None,
+                  schema_name: str = "response") -> dict:
+    """Вызов модели со structured output (json_schema) или JSON-объектом. Возвращает (data, usage)."""
     resp = client().chat.completions.create(
         model=Config.OPENAI_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        response_format={"type": "json_object"},
+        response_format=_response_format(schema, schema_name),
         max_tokens=max_tokens or Config.LLM_MAX_TOKENS,
         temperature=temperature if temperature is not None else Config.LLM_TEMPERATURE,
         extra_headers={

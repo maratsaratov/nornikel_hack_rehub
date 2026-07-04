@@ -95,25 +95,24 @@ def run_api_smoke():
     os.environ["SEED_DEMO"] = "false"
     os.environ["UPLOAD_DIR"] = os.path.join(temp_dir, "uploads")
 
+    from fastapi.testclient import TestClient
     from app import app
     from db import db
     from models import DocumentChunk, DocumentTable, Project, SourceDocument
 
-    with app.app_context():
+    with TestClient(app) as client:
         project = Project(title="Smoke project", kpi_target="Increase experimental yield")
         db.session.add(project)
         db.session.commit()
         project_id = project.id
 
-        client = app.test_client()
         for file_type, filename, payload in _samples():
             response = client.post(
                 f"/api/projects/{project_id}/documents?parse=true",
-                data={"file": (BytesIO(payload), filename)},
-                content_type="multipart/form-data",
+                files={"file": (filename, payload, "application/octet-stream")},
             )
-            assert response.status_code == 201, response.get_data(as_text=True)
-            data = response.get_json()
+            assert response.status_code == 201, response.text
+            data = response.json()
             document = data["document"]
             assert document["parse_status"] == "parsed", data
             assert document["file_type"] == file_type, data
@@ -155,7 +154,7 @@ def run_extractor_smoke():
 
 
 if __name__ == "__main__":
-    web_modules = ("flask", "flask_sqlalchemy", "sqlalchemy", "openai", "sklearn")
+    web_modules = ("fastapi", "sqlalchemy", "openai", "sklearn")
     if all(_has_module(name) for name in web_modules):
         run_api_smoke()
     else:

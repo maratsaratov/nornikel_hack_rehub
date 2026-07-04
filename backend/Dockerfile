@@ -23,4 +23,4 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
 
 # 2 workers, long timeout: цепочка acquire → предложение весов → генерация
 # (несколько LLM/сетевых вызовов подряд) может занимать до нескольких минут.
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "300", "wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "300", "-k", "uvicorn.workers.UvicornWorker", "wsgi:app"]

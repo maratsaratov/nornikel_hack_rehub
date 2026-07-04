@@ -12,6 +12,7 @@ from models import Project, Hypothesis, GenerationRun, composite_score, DEFAULT_
 import rag
 from prompts import build_generation_prompt, build_weight_prompt
 from llm import complete_json
+from llm_schemas import GENERATION_RESPONSE_SCHEMA, WEIGHT_RESPONSE_SCHEMA
 from config import Config
 
 _AXES = ("novelty", "value", "feasibility", "risk")
@@ -47,7 +48,10 @@ def suggest_weights(project_id: int) -> dict:
     if not project:
         raise ValueError("Проект не найден")
     system, user = build_weight_prompt(project)
-    data, usage = complete_json(system, user, max_tokens=1800)
+    data, usage = complete_json(
+        system, user, max_tokens=1800,
+        schema=WEIGHT_RESPONSE_SCHEMA, schema_name="ranking_weights",
+    )
     return {
         "weights": _normalize_weights(data.get("weights")),
         "rationale": data.get("rationale"),
@@ -111,7 +115,10 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
 
     # ── 3. Генерация ─────────────────────────────────────────────────────────
     try:
-        data, usage = complete_json(system, user)
+        data, usage = complete_json(
+            system, user,
+            schema=GENERATION_RESPONSE_SCHEMA, schema_name="hypotheses",
+        )
     except Exception as e:  # noqa
         run.error = f"Ошибка вызова модели: {e}"
         db.session.commit()

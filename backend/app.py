@@ -1,9 +1,12 @@
-"""Flask API «Фабрики гипотез»."""
+"""FastAPI «Фабрики гипотез»."""
 import json
-from flask import Flask, request, jsonify, Response
-from flask_cors import CORS
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import Body, FastAPI, File, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import inspect, or_, text
-from werkzeug.exceptions import RequestEntityTooLarge
 
 from config import Config
 from db import db
@@ -16,7 +19,6 @@ from models import (
     DocumentChunk,
     DocumentTable,
     DEFAULT_WEIGHTS,
-    composite_score,
 )
 from engine import generate_hypotheses, suggest_weights
 import llm
@@ -32,6 +34,8 @@ from ingestion.service import (
     parse_document as parse_ingested_document,
     save_upload,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_weights(raw):
@@ -109,34 +113,26 @@ def _parse_year(raw):
         return None
 
 
-def _request_bool(name, default=False):
-    value = request.args.get(name)
-    if value is None and request.form:
-        value = request.form.get(name)
+def _query_bool(value, default=False):
     if value is None:
         return default
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _query_int(name, default, minimum=None, maximum=None):
+def _query_int(value, default, minimum=None, maximum=None):
     try:
-        value = int(request.args.get(name, default))
+        parsed = int(value if value is not None else default)
     except (TypeError, ValueError):
-        value = default
+        parsed = default
     if minimum is not None:
-        value = max(minimum, value)
+        parsed = max(minimum, parsed)
     if maximum is not None:
-        value = min(maximum, value)
-    return value
+        parsed = min(maximum, parsed)
+    return parsed
 
 
 def _acquire_knowledge(project, topic, sources=None, limit=None, dry_run=False, max_import=12):
-    """«Умный парсер»: найти по теме внешние научные источники и импортировать в базу.
-
-    Идея: на этапе поиска — широкий recall из нескольких научных ресурсов; отбор
-    precision происходит позже в RAG+reranker при генерации. Дедуплицируем против
-    уже имеющихся источников проекта.
-    """
+    """«Умный парсер»: найти по теме внешние научные источники и импортировать в базу."""
     found = connectors.search_all(topic, sources=sources, per_source_limit=limit)
     records = found["records"]
     existing = project.sources.all()
@@ -188,11 +184,7 @@ def _acquire_knowledge(project, topic, sources=None, limit=None, dry_run=False, 
 
 
 def _ensure_columns():
-    """Лёгкие миграции: добавить недостающие колонки в существующие таблицы.
-
-    db.create_all() создаёт только отсутствующие ТАБЛИЦЫ, но не колонки, поэтому
-    новые поля (origin, goal_link, RAG/rerank-поля прогонов) добавляем вручную.
-    """
+    """Лёгкие миграции: добавить недостающие колонки в существующие таблицы."""
     wanted = {
         "knowledge_sources": {"origin": "VARCHAR(40)"},
         "hypotheses": {"goal_link": "TEXT"},
@@ -212,8 +204,6 @@ def _ensure_columns():
         for col, coltype in cols.items():
             if col in existing:
                 continue
-            # Каждая колонка — в своей транзакции. try/except делает миграцию
-            # идемпотентной и безопасной к гонке воркеров gunicorn (DuplicateColumn).
             try:
                 db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}"))
                 db.session.commit()
@@ -221,524 +211,577 @@ def _ensure_columns():
                 db.session.rollback()
 
 
-def create_app():
-    app = Flask(__name__)
-    app.config.from_object(Config)
-    app.config["MAX_CONTENT_LENGTH"] = Config.MAX_UPLOAD_BYTES
-    CORS(app)
-    db.init_app(app)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    db.init_app(Config.SQLALCHEMY_DATABASE_URI, Config.SQLALCHEMY_ENGINE_OPTIONS)
+    db.create_all()
+    _ensure_columns()
+    if Config.SEED_DEMO:
+        try:
+            from seed import seed_if_empty
+            if seed_if_empty():
+                logger.info("Демо-база знаний засеяна.")
+        except Exception as e:  # noqa
+            logger.warning("Не удалось засеять демо-данные: %s", e)
+    yield
 
-    @app.errorhandler(RequestEntityTooLarge)
-    def handle_request_entity_too_large(_exc):
-        return jsonify({"error": f"File is too large. Maximum upload size is {Config.MAX_UPLOAD_MB} MB"}), 413
 
-    with app.app_context():
-        db.create_all()
-        _ensure_columns()
-        if Config.SEED_DEMO:
+app = FastAPI(title="Hypothesis Factory", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def db_session_teardown(request: Request, call_next):
+    try:
+        return await call_next(request)
+    finally:
+        db.session.remove()
+
+
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    if request.method == "POST":
+        content_length = request.headers.get("content-length")
+        if content_length:
             try:
-                from seed import seed_if_empty
-                if seed_if_empty():
-                    app.logger.info("Демо-база знаний засеяна.")
-            except Exception as e:  # noqa
-                app.logger.warning("Не удалось засеять демо-данные: %s", e)
+                if int(content_length) > Config.MAX_UPLOAD_BYTES:
+                    return JSONResponse(
+                        {"error": f"File is too large. Maximum upload size is {Config.MAX_UPLOAD_MB} MB"},
+                        status_code=413,
+                    )
+            except ValueError:
+                pass
+    return await call_next(request)
 
-    # ── Health / config ─────────────────────────────────────────────────────
-    @app.get("/api/health")
-    def health():
-        return jsonify({"status": "ok", "model": Config.OPENAI_MODEL})
 
-    @app.get("/api/health/llm")
-    def health_llm():
-        return jsonify(llm.ping())
+# ── Health / config ─────────────────────────────────────────────────────
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "model": Config.OPENAI_MODEL}
 
-    @app.get("/api/health/rerank")
-    def health_rerank():
-        return jsonify(reranker.ping())
 
-    @app.get("/api/health/embed")
-    def health_embed():
-        return jsonify(embeddings.ping())
+@app.get("/api/health/llm")
+def health_llm():
+    return llm.ping()
 
-    @app.get("/api/config")
-    def get_config():
-        return jsonify({
-            "model": Config.OPENAI_MODEL,
-            "rerank_model": Config.RERANK_MODEL,
-            "rerank_enabled": reranker.available(),
-            "embed_model": Config.EMBED_MODEL,
-            "embed_enabled": embeddings.available(),
-            "retrieval": "hybrid (BM25 + bge-m3) → RRF → rerank" if embeddings.available()
-                         else "BM25 → rerank",
-            "default_weights": DEFAULT_WEIGHTS,
-            "weight_modes": ["expert", "model", "default"],
-            "connectors": connectors.active_connectors(),
-            "default_sources": connectors.default_sources(),
-            "max_upload_mb": Config.MAX_UPLOAD_MB,
-            "supported_document_types": ["pdf", "docx", "xlsx", "csv", "txt"],
-        })
 
-    # ── Projects ────────────────────────────────────────────────────────────
-    @app.get("/api/projects")
-    def list_projects():
-        rows = Project.query.order_by(Project.created_at.desc()).all()
-        return jsonify([p.to_dict() for p in rows])
+@app.get("/api/health/rerank")
+def health_rerank():
+    return reranker.ping()
 
-    @app.post("/api/projects")
-    def create_project():
-        d = request.get_json(force=True) or {}
-        if not (d.get("title") and d.get("kpi_target")):
-            return jsonify({"error": "Поля title и kpi_target обязательны"}), 400
-        p = Project(
-            title=d["title"].strip(),
-            kpi_target=d["kpi_target"].strip(),
-            kpi_metric=d.get("kpi_metric"),
-            kpi_direction=d.get("kpi_direction", "increase"),
-            domain=d.get("domain"),
-            constraints=d.get("constraints"),
-        )
-        db.session.add(p)
-        db.session.commit()
-        return jsonify(p.to_dict()), 201
 
-    @app.get("/api/projects/<int:pid>")
-    def get_project(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        return jsonify(p.to_dict())
+@app.get("/api/health/embed")
+def health_embed():
+    return embeddings.ping()
 
-    @app.put("/api/projects/<int:pid>")
-    def update_project(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        d = request.get_json(force=True) or {}
-        for f in ("title", "kpi_target", "kpi_metric", "kpi_direction", "domain", "constraints"):
-            if f in d:
-                setattr(p, f, d[f])
-        db.session.commit()
-        return jsonify(p.to_dict())
 
-    @app.delete("/api/projects/<int:pid>")
-    def delete_project(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        db.session.delete(p)
-        db.session.commit()
-        return jsonify({"deleted": pid})
+@app.get("/api/config")
+def get_config():
+    return {
+        "model": Config.OPENAI_MODEL,
+        "rerank_model": Config.RERANK_MODEL,
+        "rerank_enabled": reranker.available(),
+        "embed_model": Config.EMBED_MODEL,
+        "embed_enabled": embeddings.available(),
+        "retrieval": "hybrid (BM25 + bge-m3) → RRF → rerank" if embeddings.available()
+                     else "BM25 → rerank",
+        "default_weights": DEFAULT_WEIGHTS,
+        "weight_modes": ["expert", "model", "default"],
+        "connectors": connectors.active_connectors(),
+        "default_sources": connectors.default_sources(),
+        "max_upload_mb": Config.MAX_UPLOAD_MB,
+        "supported_document_types": ["pdf", "docx", "xlsx", "csv", "txt"],
+    }
 
-    # ── Knowledge sources ───────────────────────────────────────────────────
-    @app.get("/api/projects/<int:pid>/sources")
-    def list_sources(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        rows = p.sources.order_by(KnowledgeSource.created_at.desc()).all()
-        return jsonify([s.to_dict(with_content=False) for s in rows])
 
-    @app.get("/api/projects/<int:pid>/sources/search")
-    def search_sources(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
+# ── Projects ────────────────────────────────────────────────────────────
+@app.get("/api/projects")
+def list_projects():
+    rows = Project.query.order_by(Project.created_at.desc()).all()
+    return [p.to_dict() for p in rows]
 
-        query = (request.args.get("q") or "").strip()
-        limit = max(1, min(int(request.args.get("limit", Config.OPENALEX_PER_PAGE)), 10))
-        if len(query) < 2:
-            return jsonify({
-                "query": query,
-                "local": [],
-                "external": [],
-                "external_error": None,
-            })
 
-        pattern = f"%{query}%"
-        local_rows = (
-            p.sources
-            .filter(or_(
-                KnowledgeSource.title.ilike(pattern),
-                KnowledgeSource.content.ilike(pattern),
-                KnowledgeSource.authors.ilike(pattern),
-                KnowledgeSource.reference.ilike(pattern),
-            ))
-            .order_by(KnowledgeSource.created_at.desc())
-            .limit(limit)
-            .all()
-        )
-        existing_rows = p.sources.all()
+@app.post("/api/projects", status_code=201)
+def create_project(d: dict = Body(default={})):
+    if not (d.get("title") and d.get("kpi_target")):
+        return JSONResponse({"error": "Поля title и kpi_target обязательны"}, status_code=400)
+    p = Project(
+        title=d["title"].strip(),
+        kpi_target=d["kpi_target"].strip(),
+        kpi_metric=d.get("kpi_metric"),
+        kpi_direction=d.get("kpi_direction", "increase"),
+        domain=d.get("domain"),
+        constraints=d.get("constraints"),
+    )
+    db.session.add(p)
+    db.session.commit()
+    return p.to_dict()
 
-        sources = request.args.getlist("source") or None
-        found = connectors.search_all(query, sources=sources, per_source_limit=limit)
-        external = _mark_external_results(found["records"], existing_rows)
-        external_error = None
-        if not external and found["errors"]:
-            external_error = "; ".join(f"{k}: {v}" for k, v in found["errors"].items())
 
-        return jsonify({
+@app.get("/api/projects/{pid}")
+def get_project(pid: int):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    return p.to_dict()
+
+
+@app.put("/api/projects/{pid}")
+def update_project(pid: int, d: dict = Body(default={})):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    for f in ("title", "kpi_target", "kpi_metric", "kpi_direction", "domain", "constraints"):
+        if f in d:
+            setattr(p, f, d[f])
+    db.session.commit()
+    return p.to_dict()
+
+
+@app.delete("/api/projects/{pid}")
+def delete_project(pid: int):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    db.session.delete(p)
+    db.session.commit()
+    return {"deleted": pid}
+
+
+# ── Knowledge sources ───────────────────────────────────────────────────
+@app.get("/api/projects/{pid}/sources")
+def list_sources(pid: int):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    rows = p.sources.order_by(KnowledgeSource.created_at.desc()).all()
+    return [s.to_dict(with_content=False) for s in rows]
+
+
+@app.get("/api/projects/{pid}/sources/search")
+def search_sources(
+    pid: int,
+    q: str = Query(""),
+    limit: int | None = Query(None),
+    source: list[str] = Query(default=[]),
+):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+
+    query = (q or "").strip()
+    page_limit = max(1, min(int(limit or Config.OPENALEX_PER_PAGE), 10))
+    if len(query) < 2:
+        return {
             "query": query,
-            "local": [s.to_dict(with_content=False) for s in local_rows],
-            "external": external,
-            "external_stats": found["stats"],
-            "external_errors": found["errors"],
-            "external_error": external_error,
-        })
+            "local": [],
+            "external": [],
+            "external_error": None,
+        }
 
-    @app.post("/api/projects/<int:pid>/sources")
-    def add_source(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        d = request.get_json(force=True) or {}
-        if not (d.get("title") and d.get("content")):
-            return jsonify({"error": "Поля title и content обязательны"}), 400
-        s = KnowledgeSource(
-            project_id=pid,
-            title=d["title"].strip(),
-            content=d["content"].strip(),
-            source_type=d.get("source_type", "literature"),
-            origin="manual",
-            authors=d.get("authors"),
-            year=d.get("year"),
-            reference=d.get("reference"),
+    pattern = f"%{query}%"
+    local_rows = (
+        p.sources
+        .filter(or_(
+            KnowledgeSource.title.ilike(pattern),
+            KnowledgeSource.content.ilike(pattern),
+            KnowledgeSource.authors.ilike(pattern),
+            KnowledgeSource.reference.ilike(pattern),
+        ))
+        .order_by(KnowledgeSource.created_at.desc())
+        .limit(page_limit)
+        .all()
+    )
+    existing_rows = p.sources.all()
+
+    sources = source or None
+    found = connectors.search_all(query, sources=sources, per_source_limit=page_limit)
+    external = _mark_external_results(found["records"], existing_rows)
+    external_error = None
+    if not external and found["errors"]:
+        external_error = "; ".join(f"{k}: {v}" for k, v in found["errors"].items())
+
+    return {
+        "query": query,
+        "local": [s.to_dict(with_content=False) for s in local_rows],
+        "external": external,
+        "external_stats": found["stats"],
+        "external_errors": found["errors"],
+        "external_error": external_error,
+    }
+
+
+@app.post("/api/projects/{pid}/sources", status_code=201)
+def add_source(pid: int, d: dict = Body(default={})):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    if not (d.get("title") and d.get("content")):
+        return JSONResponse({"error": "Поля title и content обязательны"}, status_code=400)
+    s = KnowledgeSource(
+        project_id=pid,
+        title=d["title"].strip(),
+        content=d["content"].strip(),
+        source_type=d.get("source_type", "literature"),
+        origin="manual",
+        authors=d.get("authors"),
+        year=d.get("year"),
+        reference=d.get("reference"),
+    )
+    db.session.add(s)
+    db.session.commit()
+    return s.to_dict(with_content=False)
+
+
+@app.post("/api/projects/{pid}/sources/import-openalex")
+def import_openalex_source(pid: int, d: dict = Body(default={})):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+
+    title = (d.get("title") or "").strip()
+    content = (d.get("content") or "").strip()
+    if not (title and content):
+        return JSONResponse({"error": "Для импорта нужны title и content"}, status_code=400)
+
+    year = _parse_year(d.get("year"))
+    reference = (d.get("reference") or "").strip() or (d.get("external_id") or "").strip() or None
+    authors = (d.get("authors") or "").strip() or None
+
+    existing_rows = p.sources.all()
+    existing = _match_existing_source(
+        {"title": title, "year": year, "reference": reference},
+        *_source_lookups(existing_rows),
+    )
+    if existing:
+        return JSONResponse({"created": False, "source": existing.to_dict(with_content=False)})
+
+    s = KnowledgeSource(
+        project_id=pid,
+        title=title,
+        content=content,
+        source_type="literature",
+        origin="openalex",
+        authors=authors,
+        year=year,
+        reference=reference,
+    )
+    db.session.add(s)
+    db.session.commit()
+    return JSONResponse({"created": True, "source": s.to_dict(with_content=False)}, status_code=201)
+
+
+@app.post("/api/projects/{pid}/knowledge/acquire")
+def acquire_knowledge(pid: int, d: dict = Body(default={})):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    topic = (d.get("topic") or d.get("q") or "").strip()
+    if not topic:
+        topic = " ".join(filter(None, [p.kpi_target, p.domain]))[:300]
+    try:
+        result = _acquire_knowledge(
+            p, topic,
+            sources=d.get("sources"),
+            limit=d.get("limit"),
+            dry_run=bool(d.get("preview")),
+            max_import=int(d.get("max_import", 12)),
         )
-        db.session.add(s)
-        db.session.commit()
-        return jsonify(s.to_dict(with_content=False)), 201
+    except Exception as e:  # noqa
+        return JSONResponse({"error": f"Ошибка поиска источников: {e}"}, status_code=502)
+    return result
 
-    @app.post("/api/projects/<int:pid>/sources/import-openalex")
-    def import_openalex_source(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
 
-        d = request.get_json(force=True) or {}
-        title = (d.get("title") or "").strip()
-        content = (d.get("content") or "").strip()
-        if not (title and content):
-            return jsonify({"error": "Для импорта нужны title и content"}), 400
+@app.post("/api/projects/{pid}/weights/suggest")
+def weights_suggest(pid: int):
+    try:
+        return suggest_weights(pid)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except Exception as e:  # noqa
+        return JSONResponse({"error": f"Не удалось предложить веса: {e}"}, status_code=502)
 
-        year = _parse_year(d.get("year"))
-        reference = (d.get("reference") or "").strip() or (d.get("external_id") or "").strip() or None
-        authors = (d.get("authors") or "").strip() or None
 
-        existing_rows = p.sources.all()
-        existing = _match_existing_source(
-            {"title": title, "year": year, "reference": reference},
-            *_source_lookups(existing_rows),
+@app.put("/api/sources/{sid}")
+def update_source(sid: int, d: dict = Body(default={})):
+    s = db.session.get(KnowledgeSource, sid)
+    if not s:
+        return JSONResponse({"error": "Источник не найден"}, status_code=404)
+    for f in ("title", "content", "source_type", "authors", "year", "reference"):
+        if f in d:
+            setattr(s, f, _parse_year(d[f]) if f == "year" else d[f])
+    db.session.commit()
+    return s.to_dict(with_content=False)
+
+
+@app.delete("/api/sources/{sid}")
+def delete_source(sid: int):
+    s = db.session.get(KnowledgeSource, sid)
+    if not s:
+        return JSONResponse({"error": "Источник не найден"}, status_code=404)
+    db.session.delete(s)
+    db.session.commit()
+    return {"deleted": sid}
+
+
+@app.get("/api/projects/{pid}/documents")
+def list_documents(pid: int):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    rows = p.documents.order_by(SourceDocument.created_at.desc()).all()
+    return [document.to_dict(with_raw_text=False) for document in rows]
+
+
+@app.post("/api/projects/{pid}/documents", status_code=201)
+def upload_document(
+    pid: int,
+    file: UploadFile = File(...),
+    parse: str | None = Query(None),
+):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    try:
+        document = save_upload(pid, file)
+    except FileTooLargeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=413)
+    except IngestionError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    parse_run = None
+    if _query_bool(parse, default=False):
+        document, parse_run = parse_ingested_document(document.id)
+
+    payload = {"document": document.to_dict(with_raw_text=False)}
+    if parse_run:
+        payload["parse_run"] = parse_run.to_dict()
+    return payload
+
+
+@app.get("/api/documents/{did}")
+def get_document(did: int, raw: str | None = Query(None)):
+    document = db.session.get(SourceDocument, did)
+    if not document:
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    return document.to_dict(with_raw_text=_query_bool(raw, default=False))
+
+
+@app.post("/api/documents/{did}/parse")
+def parse_document(did: int):
+    document = db.session.get(SourceDocument, did)
+    if not document:
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    document, parse_run = parse_ingested_document(did)
+    status_code = 200 if parse_run.status == "parsed" else 422
+    return JSONResponse({
+        "document": document.to_dict(with_raw_text=False),
+        "parse_run": parse_run.to_dict(),
+    }, status_code=status_code)
+
+
+@app.get("/api/documents/{did}/chunks")
+def list_document_chunks(
+    did: int,
+    limit: int | None = Query(None),
+    offset: int | None = Query(None),
+):
+    document = db.session.get(SourceDocument, did)
+    if not document:
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    page_limit = _query_int(limit, 100, minimum=1, maximum=500)
+    page_offset = _query_int(offset, 0, minimum=0)
+    query = document.chunks.order_by(DocumentChunk.chunk_index.asc())
+    return {
+        "document_id": did,
+        "count": query.count(),
+        "items": [chunk.to_dict() for chunk in query.offset(page_offset).limit(page_limit).all()],
+    }
+
+
+@app.get("/api/documents/{did}/tables")
+def list_document_tables(
+    did: int,
+    limit: int | None = Query(None),
+    offset: int | None = Query(None),
+):
+    document = db.session.get(SourceDocument, did)
+    if not document:
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    page_limit = _query_int(limit, 50, minimum=1, maximum=200)
+    page_offset = _query_int(offset, 0, minimum=0)
+    query = document.tables.order_by(DocumentTable.id.asc())
+    return {
+        "document_id": did,
+        "count": query.count(),
+        "items": [table.to_dict() for table in query.offset(page_offset).limit(page_limit).all()],
+    }
+
+
+@app.get("/api/documents/{did}/preview")
+def preview_document(did: int):
+    document = db.session.get(SourceDocument, did)
+    if not document:
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    return document_preview(document)
+
+
+@app.delete("/api/documents/{did}")
+def delete_document_endpoint(did: int):
+    document = db.session.get(SourceDocument, did)
+    if not document:
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    delete_ingested_document(document)
+    return {"deleted": did}
+
+
+# ── Generation ──────────────────────────────────────────────────────────
+@app.post("/api/projects/{pid}/generate", status_code=201)
+def generate(pid: int, d: dict = Body(default={})):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+
+    n = max(1, min(int(d.get("n", 5)), 10))
+    top_k = max(1, min(int(d.get("top_k", 6)), 12))
+    weights = _parse_weights(d.get("weights"))
+    weight_mode = d.get("weight_mode") or ("expert" if weights else "default")
+    topic = (d.get("topic") or "").strip() or None
+    use_rerank = bool(d.get("use_rerank", True))
+    candidate_pool = d.get("candidate_pool")
+    if candidate_pool is not None:
+        candidate_pool = max(4, min(int(candidate_pool), 60))
+
+    acquired = None
+    try:
+        if d.get("acquire_external"):
+            acq_topic = topic or " ".join(filter(None, [p.kpi_target, p.domain]))[:300]
+            acquired = _acquire_knowledge(
+                p, acq_topic, sources=d.get("sources"),
+                limit=d.get("acquire_limit"), max_import=int(d.get("max_import", 12)),
+            )
+        run, hyps = generate_hypotheses(
+            pid, n=n, top_k=top_k, weights=weights, weight_mode=weight_mode,
+            topic=topic, use_rerank=use_rerank, candidate_pool=candidate_pool,
         )
-        if existing:
-            return jsonify({"created": False, "source": existing.to_dict(with_content=False)}), 200
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    except Exception as e:  # noqa
+        return JSONResponse({"error": f"Внутренняя ошибка генерации: {e}"}, status_code=500)
 
-        s = KnowledgeSource(
-            project_id=pid,
-            title=title,
-            content=content,
-            source_type="literature",
-            origin="openalex",
-            authors=authors,
-            year=year,
-            reference=reference,
-        )
-        db.session.add(s)
-        db.session.commit()
-        return jsonify({"created": True, "source": s.to_dict(with_content=False)}), 201
+    resp = {"run": run, "hypotheses": hyps}
+    if acquired is not None:
+        resp["acquired"] = acquired
+    return resp
 
-    @app.post("/api/projects/<int:pid>/knowledge/acquire")
-    def acquire_knowledge(pid):
-        """По теме найти внешние научные источники и импортировать в базу знаний.
 
-        Тело: {topic?, sources?: [str], limit?, max_import?, preview?}
-        preview=true — только показать найденное, без импорта.
-        """
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        d = request.get_json(force=True) or {}
-        topic = (d.get("topic") or d.get("q") or "").strip()
-        if not topic:
-            topic = " ".join(filter(None, [p.kpi_target, p.domain]))[:300]
-        try:
-            result = _acquire_knowledge(
-                p, topic,
-                sources=d.get("sources"),
-                limit=d.get("limit"),
-                dry_run=bool(d.get("preview")),
-                max_import=int(d.get("max_import", 12)),
-            )
-        except Exception as e:  # noqa
-            return jsonify({"error": f"Ошибка поиска источников: {e}"}), 502
-        return jsonify(result)
+# ── Hypotheses ──────────────────────────────────────────────────────────
+@app.get("/api/projects/{pid}/hypotheses")
+def list_hypotheses(
+    pid: int,
+    weights: str | None = Query(None),
+    status: str | None = Query(None),
+):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    parsed_weights = _parse_weights(weights) or DEFAULT_WEIGHTS
+    q = p.hypotheses
+    if status:
+        q = q.filter(Hypothesis.status == status)
+    rows = q.all()
+    out = [h.to_dict(parsed_weights) for h in rows]
+    out.sort(key=lambda x: x["composite"], reverse=True)
+    return out
 
-    @app.post("/api/projects/<int:pid>/weights/suggest")
-    def weights_suggest(pid):
-        """Модель предлагает веса ранжирования под проект (можно переопределить экспертом)."""
-        try:
-            return jsonify(suggest_weights(pid))
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 404
-        except Exception as e:  # noqa
-            return jsonify({"error": f"Не удалось предложить веса: {e}"}), 502
 
-    @app.put("/api/sources/<int:sid>")
-    def update_source(sid):
-        s = db.session.get(KnowledgeSource, sid)
-        if not s:
-            return jsonify({"error": "Источник не найден"}), 404
-        d = request.get_json(force=True) or {}
-        for f in ("title", "content", "source_type", "authors", "year", "reference"):
-            if f in d:
-                setattr(s, f, _parse_year(d[f]) if f == "year" else d[f])
-        db.session.commit()
-        return jsonify(s.to_dict(with_content=False))
+@app.get("/api/projects/{pid}/hypotheses/export")
+def export_hypotheses(
+    pid: int,
+    format: str = Query("md", alias="format"),
+    weights: str | None = Query(None),
+):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    fmt = (format or "md").lower()
+    parsed_weights = _parse_weights(weights) or DEFAULT_WEIGHTS
+    hyps = [h.to_dict(parsed_weights) for h in p.hypotheses.all()]
+    hyps.sort(key=lambda x: x["composite"], reverse=True)
+    project = p.to_dict()
 
-    @app.delete("/api/sources/<int:sid>")
-    def delete_source(sid):
-        s = db.session.get(KnowledgeSource, sid)
-        if not s:
-            return jsonify({"error": "Источник не найден"}), 404
-        db.session.delete(s)
-        db.session.commit()
-        return jsonify({"deleted": sid})
-
-    @app.get("/api/projects/<int:pid>/documents")
-    def list_documents(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Project not found"}), 404
-        rows = p.documents.order_by(SourceDocument.created_at.desc()).all()
-        return jsonify([document.to_dict(with_raw_text=False) for document in rows])
-
-    @app.post("/api/projects/<int:pid>/documents")
-    def upload_document(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Project not found"}), 404
-        try:
-            document = save_upload(pid, request.files.get("file"))
-        except FileTooLargeError as exc:
-            return jsonify({"error": str(exc)}), 413
-        except IngestionError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-        parse_run = None
-        if _request_bool("parse", default=False):
-            document, parse_run = parse_ingested_document(document.id)
-
-        payload = {"document": document.to_dict(with_raw_text=False)}
-        if parse_run:
-            payload["parse_run"] = parse_run.to_dict()
-        return jsonify(payload), 201
-
-    @app.get("/api/documents/<int:did>")
-    def get_document(did):
-        document = db.session.get(SourceDocument, did)
-        if not document:
-            return jsonify({"error": "Document not found"}), 404
-        return jsonify(document.to_dict(with_raw_text=_request_bool("raw", default=False)))
-
-    @app.post("/api/documents/<int:did>/parse")
-    def parse_document(did):
-        document = db.session.get(SourceDocument, did)
-        if not document:
-            return jsonify({"error": "Document not found"}), 404
-        document, parse_run = parse_ingested_document(did)
-        status_code = 200 if parse_run.status == "parsed" else 422
-        return jsonify({
-            "document": document.to_dict(with_raw_text=False),
-            "parse_run": parse_run.to_dict(),
-        }), status_code
-
-    @app.get("/api/documents/<int:did>/chunks")
-    def list_document_chunks(did):
-        document = db.session.get(SourceDocument, did)
-        if not document:
-            return jsonify({"error": "Document not found"}), 404
-        limit = _query_int("limit", 100, minimum=1, maximum=500)
-        offset = _query_int("offset", 0, minimum=0)
-        query = document.chunks.order_by(DocumentChunk.chunk_index.asc())
-        return jsonify({
-            "document_id": did,
-            "count": query.count(),
-            "items": [chunk.to_dict() for chunk in query.offset(offset).limit(limit).all()],
-        })
-
-    @app.get("/api/documents/<int:did>/tables")
-    def list_document_tables(did):
-        document = db.session.get(SourceDocument, did)
-        if not document:
-            return jsonify({"error": "Document not found"}), 404
-        limit = _query_int("limit", 50, minimum=1, maximum=200)
-        offset = _query_int("offset", 0, minimum=0)
-        query = document.tables.order_by(DocumentTable.id.asc())
-        return jsonify({
-            "document_id": did,
-            "count": query.count(),
-            "items": [table.to_dict() for table in query.offset(offset).limit(limit).all()],
-        })
-
-    @app.get("/api/documents/<int:did>/preview")
-    def preview_document(did):
-        document = db.session.get(SourceDocument, did)
-        if not document:
-            return jsonify({"error": "Document not found"}), 404
-        return jsonify(document_preview(document))
-
-    @app.delete("/api/documents/<int:did>")
-    def delete_document_endpoint(did):
-        document = db.session.get(SourceDocument, did)
-        if not document:
-            return jsonify({"error": "Document not found"}), 404
-        delete_ingested_document(document)
-        return jsonify({"deleted": did})
-
-    # ── Generation ──────────────────────────────────────────────────────────
-    @app.post("/api/projects/<int:pid>/generate")
-    def generate(pid):
-        """Сгенерировать гипотезы через RAG+reranker.
-
-        Тело: {n?, top_k?, weights?, weight_mode?: expert|model|default, topic?,
-               use_rerank?, candidate_pool?, acquire_external?, sources?, max_import?}
-        """
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-
-        d = request.get_json(force=True) or {}
-        n = max(1, min(int(d.get("n", 5)), 10))
-        top_k = max(1, min(int(d.get("top_k", 6)), 12))
-        weights = _parse_weights(d.get("weights"))
-        weight_mode = d.get("weight_mode") or ("expert" if weights else "default")
-        topic = (d.get("topic") or "").strip() or None
-        use_rerank = bool(d.get("use_rerank", True))
-        candidate_pool = d.get("candidate_pool")
-        if candidate_pool is not None:
-            candidate_pool = max(4, min(int(candidate_pool), 60))
-
-        acquired = None
-        try:
-            if d.get("acquire_external"):
-                acq_topic = topic or " ".join(filter(None, [p.kpi_target, p.domain]))[:300]
-                acquired = _acquire_knowledge(
-                    p, acq_topic, sources=d.get("sources"),
-                    limit=d.get("acquire_limit"), max_import=int(d.get("max_import", 12)),
-                )
-            run, hyps = generate_hypotheses(
-                pid, n=n, top_k=top_k, weights=weights, weight_mode=weight_mode,
-                topic=topic, use_rerank=use_rerank, candidate_pool=candidate_pool,
-            )
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 404
-        except RuntimeError as e:
-            return jsonify({"error": str(e)}), 502
-        except Exception as e:  # noqa
-            return jsonify({"error": f"Внутренняя ошибка генерации: {e}"}), 500
-
-        resp = {"run": run, "hypotheses": hyps}
-        if acquired is not None:
-            resp["acquired"] = acquired
-        return jsonify(resp), 201
-
-    # ── Hypotheses ──────────────────────────────────────────────────────────
-    @app.get("/api/projects/<int:pid>/hypotheses")
-    def list_hypotheses(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        weights = _parse_weights(request.args.get("weights")) or DEFAULT_WEIGHTS
-        status = request.args.get("status")
-        q = p.hypotheses
-        if status:
-            q = q.filter(Hypothesis.status == status)
-        rows = q.all()
-        out = [h.to_dict(weights) for h in rows]
-        out.sort(key=lambda x: x["composite"], reverse=True)
-        return jsonify(out)
-
-    @app.get("/api/projects/<int:pid>/hypotheses/export")
-    def export_hypotheses(pid):
-        """Экспорт ранжированных гипотез: format=md|json|csv."""
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        fmt = (request.args.get("format") or "md").lower()
-        weights = _parse_weights(request.args.get("weights")) or DEFAULT_WEIGHTS
-        hyps = [h.to_dict(weights) for h in p.hypotheses.all()]
-        hyps.sort(key=lambda x: x["composite"], reverse=True)
-        project = p.to_dict()
-
-        if fmt == "json":
-            return jsonify({"project": project, "weights": weights, "hypotheses": hyps})
-        if fmt == "csv":
-            return Response(
-                export.to_csv(hyps),
-                mimetype="text/csv",
-                headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.csv"},
-            )
+    if fmt == "json":
+        return {"project": project, "weights": parsed_weights, "hypotheses": hyps}
+    if fmt == "csv":
         return Response(
-            export.to_markdown(project, hyps, weights),
-            mimetype="text/markdown",
-            headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.md"},
+            content=export.to_csv(hyps),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.csv"},
         )
-
-    @app.patch("/api/hypotheses/<int:hid>")
-    def update_hypothesis(hid):
-        """Экспертная корректировка: статус, заметки, переопределение оценок, правка текста."""
-        h = db.session.get(Hypothesis, hid)
-        if not h:
-            return jsonify({"error": "Гипотеза не найдена"}), 404
-        d = request.get_json(force=True) or {}
-        if "status" in d and d["status"] in ("proposed", "accepted", "rejected", "review"):
-            h.status = d["status"]
-        if "expert_notes" in d:
-            h.expert_notes = d["expert_notes"]
-        if "expert_scores" in d:
-            # частичное переопределение оценок экспертом (или сброс = null)
-            cur = dict(h.expert_scores or {})
-            for k, v in (d["expert_scores"] or {}).items():
-                if k in ("novelty", "value", "feasibility", "risk"):
-                    if v is None:
-                        cur.pop(k, None)
-                    else:
-                        cur[k] = max(0, min(100, float(v)))
-            h.expert_scores = cur or None
-        for f in ("statement", "rationale", "mechanism", "validation"):
-            if f in d:
-                setattr(h, f, d[f])
-        db.session.commit()
-        weights = _parse_weights(d.get("weights")) or DEFAULT_WEIGHTS
-        return jsonify(h.to_dict(weights))
-
-    @app.delete("/api/hypotheses/<int:hid>")
-    def delete_hypothesis(hid):
-        h = db.session.get(Hypothesis, hid)
-        if not h:
-            return jsonify({"error": "Гипотеза не найдена"}), 404
-        db.session.delete(h)
-        db.session.commit()
-        return jsonify({"deleted": hid})
-
-    # ── Runs (аудит/прозрачность) ───────────────────────────────────────────
-    @app.get("/api/projects/<int:pid>/runs")
-    def list_runs(pid):
-        p = db.session.get(Project, pid)
-        if not p:
-            return jsonify({"error": "Проект не найден"}), 404
-        rows = p.runs.order_by(GenerationRun.created_at.desc()).all()
-        return jsonify([r.to_dict() for r in rows])
-
-    @app.get("/api/runs/<int:rid>")
-    def get_run(rid):
-        r = db.session.get(GenerationRun, rid)
-        if not r:
-            return jsonify({"error": "Запуск не найден"}), 404
-        return jsonify(r.to_dict())
-
-    return app
+    return Response(
+        content=export.to_markdown(project, hyps, parsed_weights),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.md"},
+    )
 
 
-app = create_app()
+@app.patch("/api/hypotheses/{hid}")
+def update_hypothesis(hid: int, d: dict = Body(default={})):
+    h = db.session.get(Hypothesis, hid)
+    if not h:
+        return JSONResponse({"error": "Гипотеза не найдена"}, status_code=404)
+    if "status" in d and d["status"] in ("proposed", "accepted", "rejected", "review"):
+        h.status = d["status"]
+    if "expert_notes" in d:
+        h.expert_notes = d["expert_notes"]
+    if "expert_scores" in d:
+        cur = dict(h.expert_scores or {})
+        for k, v in (d["expert_scores"] or {}).items():
+            if k in ("novelty", "value", "feasibility", "risk"):
+                if v is None:
+                    cur.pop(k, None)
+                else:
+                    cur[k] = max(0, min(100, float(v)))
+        h.expert_scores = cur or None
+    for f in ("statement", "rationale", "mechanism", "validation"):
+        if f in d:
+            setattr(h, f, d[f])
+    db.session.commit()
+    parsed_weights = _parse_weights(d.get("weights")) or DEFAULT_WEIGHTS
+    return h.to_dict(parsed_weights)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+
+@app.delete("/api/hypotheses/{hid}")
+def delete_hypothesis(hid: int):
+    h = db.session.get(Hypothesis, hid)
+    if not h:
+        return JSONResponse({"error": "Гипотеза не найдена"}, status_code=404)
+    db.session.delete(h)
+    db.session.commit()
+    return {"deleted": hid}
+
+
+# ── Runs (аудит/прозрачность) ───────────────────────────────────────────
+@app.get("/api/projects/{pid}/runs")
+def list_runs(pid: int):
+    p = db.session.get(Project, pid)
+    if not p:
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    rows = p.runs.order_by(GenerationRun.created_at.desc()).all()
+    return [r.to_dict() for r in rows]
+
+
+@app.get("/api/runs/{rid}")
+def get_run(rid: int):
+    r = db.session.get(GenerationRun, rid)
+    if not r:
+        return JSONResponse({"error": "Запуск не найден"}, status_code=404)
+    return r.to_dict()

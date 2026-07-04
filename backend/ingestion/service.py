@@ -1,7 +1,9 @@
 import os
+import re
+import shutil
 from uuid import uuid4
 
-from werkzeug.utils import secure_filename
+from fastapi import UploadFile
 
 from config import Config
 from db import db
@@ -48,22 +50,28 @@ def ensure_upload_dir() -> str:
     return upload_dir
 
 
-def save_upload(project_id: int, file_storage) -> SourceDocument:
+def _secure_filename(filename: str) -> str:
+    name = os.path.basename(filename or "")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return name or "upload"
+
+
+def save_upload(project_id: int, file_storage: UploadFile) -> SourceDocument:
     if not file_storage or not file_storage.filename:
         raise IngestionError("No file was provided")
-    _ensure_upload_size_allowed(getattr(file_storage, "content_length", None) or None)
 
     upload_dir = ensure_upload_dir()
     original_filename = os.path.basename(file_storage.filename)
     file_type = detect_file_type(original_filename)
-    safe_name = secure_filename(original_filename)
+    safe_name = _secure_filename(original_filename)
     if not safe_name:
         extension = os.path.splitext(original_filename)[1].lower()
         safe_name = f"upload{extension}"
     stored_name = f"{uuid4().hex}_{safe_name}"
     stored_path = os.path.abspath(os.path.join(upload_dir, f"project_{project_id}", stored_name))
     os.makedirs(os.path.dirname(stored_path), exist_ok=True)
-    file_storage.save(stored_path)
+    with open(stored_path, "wb") as dest:
+        shutil.copyfileobj(file_storage.file, dest)
     try:
         _ensure_upload_size_allowed(os.path.getsize(stored_path))
     except IngestionError:
