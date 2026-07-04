@@ -62,9 +62,25 @@ function Icon({ name }) {
 
 function retrievedMeta(source) {
   const parts = []
+  if (source?.source_kind === 'document') parts.push('Документ')
+  else if (source?.source_kind === 'library') parts.push('База знаний')
+  if (source?.section_title) parts.push(String(source.section_title))
+  if (source?.page_ref) parts.push(`Лист/стр. ${source.page_ref}`)
   if (typeof source?.score === 'number') parts.push(`Score ${source.score.toFixed(3)}`)
   if (Array.isArray(source?.terms) && source.terms.length > 0) parts.push(source.terms.join(', '))
   return parts.join(' · ')
+}
+
+function sameRetrievedEntity(entry, kind, entityId) {
+  const entryKind = String(entry?.source_kind || 'source')
+  const entryId = entry?.source_id ?? entry?.entity_id
+  return entryKind === kind && String(entryId) === String(entityId)
+}
+
+function compactText(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join(', ')
+  if (value === null || value === undefined) return ''
+  return String(value).replace(/\s+/g, ' ').trim()
 }
 
 function sourceOriginLabel(origin) {
@@ -86,6 +102,58 @@ function knowledgeSourceSummary(source) {
   return source?.excerpt || knowledgeSourceMeta(source) || 'Источник доступен в базе знаний проекта.'
 }
 
+function knowledgeDocumentMeta(document) {
+  const parts = []
+  const fileType = compactText(document?.file_type).toUpperCase()
+  if (fileType) parts.push(fileType)
+  if (document?.parse_status && document.parse_status !== 'parsed') parts.push(String(document.parse_status))
+  return parts.join(' · ')
+}
+
+function knowledgeItemTitle(item) {
+  if (item?.kind === 'document') {
+    return compactText(item?.metadata?.title || item?.filename) || 'Document'
+  }
+  return compactText(item?.title) || 'Source'
+}
+
+function knowledgeItemMeta(item) {
+  if (item?.kind === 'document') return knowledgeDocumentMeta(item)
+  return knowledgeSourceMeta(item)
+}
+
+function knowledgeItemSummary(item) {
+  return compactText(
+    item?.excerpt
+      || item?.summary
+      || item?.metadata?.summary
+      || item?.description
+      || item?.metadata?.description
+      || item?.raw_text_preview
+      || knowledgeItemMeta(item)
+      || 'Item is available in the project knowledge base.',
+  )
+}
+
+function buildKnowledgeItems(sources, documents) {
+  const sourceItems = (Array.isArray(sources) ? sources : []).map((source) => ({
+    ...source,
+    kind: 'source',
+    _key: `source-${source.id}`,
+  }))
+
+  const documentItems = (Array.isArray(documents) ? documents : []).map((document) => ({
+    ...document,
+    kind: 'document',
+    title: knowledgeItemTitle({ ...document, kind: 'document' }),
+    excerpt: knowledgeItemSummary({ ...document, kind: 'document' }),
+    authors: knowledgeDocumentMeta(document),
+    _key: `document-${document.id}`,
+  }))
+
+  return [...sourceItems, ...documentItems]
+}
+
 function sortScoreValue(hypothesis, sortKey) {
   if (sortKey === 'rank') return Number(hypothesis?._composite) || 0
   return Number(effectiveScores(hypothesis)?.[sortKey]) || 0
@@ -104,7 +172,14 @@ function formatRankFormula(weights) {
   ].join(' + ')
 }
 
-export default function GenerationPanel({ project, flash, onDeleteSource, sources = [] }) {
+export default function GenerationPanel({
+  project,
+  flash,
+  onDeleteSource,
+  onDeleteDocument,
+  sources = [],
+  documents = [],
+}) {
   const [generating, setGenerating] = useState(false)
   const [params, setParams] = useState({ n: 5, top_k: 6 })
   const [weights, setWeights] = useState({
@@ -119,7 +194,7 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
   const [roadmapHypothesisId, setRoadmapHypothesisId] = useState(null)
   const [sortBy, setSortBy] = useState('rank')
   const [seenHypothesisIds, setSeenHypothesisIds] = useState(() => new Set())
-  const [deletingSourceId, setDeletingSourceId] = useState(null)
+  const [deletingKnowledgeKey, setDeletingKnowledgeKey] = useState('')
 
   useEffect(() => {
     if (!project) return
@@ -169,6 +244,10 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
     () => rankedHypotheses.find((item) => item.id === openedHypothesisId) || null,
     [rankedHypotheses, openedHypothesisId],
   )
+  const openedHypothesisScores = useMemo(
+    () => (openedHypothesis ? effectiveScores(openedHypothesis) : null),
+    [openedHypothesis],
+  )
 
   const openedHypothesisRank = useMemo(() => {
     const index = rankedHypotheses.findIndex((item) => item.id === openedHypothesisId)
@@ -185,10 +264,11 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
     return index >= 0 ? index + 1 : null
   }, [rankedHypotheses, roadmapHypothesisId])
 
-  const knowledgeSources = useMemo(
-    () => Array.isArray(sources) ? sources : [],
-    [sources],
+  const knowledgeItems = useMemo(
+    () => buildKnowledgeItems(sources, documents),
+    [sources, documents],
   )
+  const knowledgeSources = knowledgeItems
 
   const handleGenerate = async () => {
     setGenerating(true)
@@ -299,22 +379,45 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
     }, 0)
   }
 
-  const handleDeleteRetrievedSource = async (source) => {
-    const sourceId = Number(source?.id || source?.source_id)
-    if (!sourceId || deletingSourceId || !onDeleteSource) return
+  const handleDeleteKnowledgeItem = async (item) => {
+    const itemKey = String(item?._key || '')
+    if (!itemKey || deletingKnowledgeKey) return
 
-    setDeletingSourceId(sourceId)
-    const deleted = await onDeleteSource(sourceId)
-    if (deleted) {
-      setLatestRun((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          retrieved: (prev.retrieved || []).filter((item) => Number(item?.source_id) !== sourceId),
+    setDeletingKnowledgeKey(itemKey)
+    try {
+      if (item?.kind === 'document') {
+        if (!item?.id || !onDeleteDocument) return
+        try {
+          await onDeleteDocument(item.id)
+          setLatestRun((prev) => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              retrieved: (prev.retrieved || []).filter((entry) => !sameRetrievedEntity(entry, 'document', item.id)),
+            }
+          })
+        } catch (error) {
+          flash(error.message, 'err')
         }
-      })
+        return
+      }
+
+      const sourceId = Number(item?.id || item?.source_id)
+      if (!sourceId || !onDeleteSource) return
+
+      const deleted = await onDeleteSource(sourceId)
+      if (deleted) {
+        setLatestRun((prev) => {
+          if (!prev) return prev
+          return {
+            ...prev,
+            retrieved: (prev.retrieved || []).filter((entry) => !sameRetrievedEntity(entry, 'source', sourceId)),
+          }
+        })
+      }
+    } finally {
+      setDeletingKnowledgeKey('')
     }
-    setDeletingSourceId(null)
   }
 
   const openComparisonPlaceholder = () => flash('Сравнение гипотез появится в следующем обновлении интерфейса.', 'err')
@@ -432,10 +535,10 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
               <p className="card-desc">{h.mechanism || h.statement}</p>
 
               <div className="card-meters">
-                <Meter label="Новизна" val={h.scores.novelty} weight={weights.novelty} />
-                <Meter label="Ценность" val={h.scores.value} weight={weights.value} />
-                <Meter label="Реализуемость" val={h.scores.feasibility} weight={weights.feasibility} />
-                <Meter label="Риск" val={h.scores.risk} weight={weights.risk} />
+                <Meter label="Новизна" val={effectiveScores(h).novelty} weight={weights.novelty} />
+                <Meter label="Ценность" val={effectiveScores(h).value} weight={weights.value} />
+                <Meter label="Реализуемость" val={effectiveScores(h).feasibility} weight={weights.feasibility} />
+                <Meter label="Риск" val={effectiveScores(h).risk} weight={weights.risk} />
               </div>
 
               <div className="card-actions">
@@ -462,7 +565,7 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
           {knowledgeSources.length > 0 ? (
             <div className="sb-list">
               {knowledgeSources.map((src) => (
-                <div key={src.id} className="sb-item">
+                <div key={src._key || src.id} className="sb-item">
                   <div className="sb-icon"><Icon name="doc" /></div>
                   <div className="sb-info">
                     <div className="sb-info__top">
@@ -471,8 +574,8 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
                         <button
                           className="sb-remove"
                           type="button"
-                          onClick={() => handleDeleteRetrievedSource(src)}
-                          disabled={deletingSourceId === Number(src.id)}
+                          onClick={() => handleDeleteKnowledgeItem(src)}
+                          disabled={deletingKnowledgeKey === src._key}
                           aria-label={`Удалить источник ${src.title}`}
                           title="Удалить источник"
                         >
@@ -520,7 +623,7 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
               {SCORE_ITEMS.map((item) => (
                 <div className="hypothesis-modal__score" key={item.key}>
                   <span>{item.label}</span>
-                  <strong>{Math.round(openedHypothesis.scores?.[item.key] ?? 0)}</strong>
+                  <strong>{Math.round(openedHypothesisScores?.[item.key] ?? 0)}</strong>
                 </div>
               ))}
             </div>
@@ -567,7 +670,7 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
                 <h4>Опорные источники</h4>
                 <div className="hypothesis-modal__evidence">
                   {openedHypothesis.evidence.map((item, index) => (
-                    <div className="hypothesis-modal__evidence-item" key={`${item.source_id || item.title || 'ev'}-${index}`}>
+                    <div className="hypothesis-modal__evidence-item" key={`${item.source_key || item.source_id || item.title || 'ev'}-${index}`}>
                       <strong>{item.title || `Источник ${index + 1}`}</strong>
                       {item.snippet && <p>{item.snippet}</p>}
                       {item.relevance && <span>{item.relevance}</span>}
@@ -582,7 +685,7 @@ export default function GenerationPanel({ project, flash, onDeleteSource, source
                 <h4>Источники последнего запуска</h4>
                 <div className="hypothesis-modal__evidence">
                   {(latestRun?.retrieved || []).map((item, index) => (
-                    <div className="hypothesis-modal__evidence-item" key={`${item.source_id || item.title || 'run'}-${index}`}>
+                    <div className="hypothesis-modal__evidence-item" key={`${item.source_key || item.source_id || item.title || 'run'}-${index}`}>
                       <strong>{item.title || `Источник ${index + 1}`}</strong>
                       {retrievedMeta(item) && <span>{retrievedMeta(item)}</span>}
                     </div>
@@ -738,14 +841,16 @@ function ExpertFeedback({ hypothesis, onUpdate }) {
 }
 
 function Meter({ label, val = 0, weight }) {
+  const numericValue = Number(val)
+  const displayValue = Number.isFinite(numericValue) ? Math.round(numericValue) : 0
   return (
     <div className="meter">
       <div className="m-head">
         <span>{label}</span>
-        <span>{weight}%</span>
+        <span>{displayValue}/100</span>
       </div>
       <div className="m-track">
-        <div className="m-fill" style={{ width: `${val}%`, opacity: weight / 100 + 0.2 }}></div>
+        <div className="m-fill" style={{ width: `${displayValue}%`, opacity: weight / 100 + 0.2 }}></div>
       </div>
     </div>
   )

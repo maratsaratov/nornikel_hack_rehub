@@ -23,6 +23,14 @@ class LocalKnowledgeSource:
     year: int | None = None
     reference: str | None = None
 
+    @property
+    def retrieval_kind(self) -> str:
+        return "library"
+
+    @property
+    def retrieval_id(self) -> str:
+        return str(self.id)
+
 
 _CACHE_SIGNATURE: tuple | None = None
 _CACHE_SOURCES: list[LocalKnowledgeSource] = []

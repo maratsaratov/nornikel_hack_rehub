@@ -43,6 +43,21 @@ function clipped(value, limit = 165) {
   return text.length > limit ? `${text.slice(0, limit).trim()}...` : text
 }
 
+function summaryKey(value) {
+  return compactText(value).toLowerCase().replace(/[^a-zа-яё0-9]+/gi, '')
+}
+
+function looksLikeTitleOnlySummary(value, ...candidates) {
+  const summary = summaryKey(value)
+  if (!summary || summary.length < 12) return true
+  return candidates.some((candidate) => {
+    const current = summaryKey(candidate)
+    if (!current) return false
+    return summary === current
+      || (summary.length <= current.length + 12 && (summary.startsWith(current) || current.startsWith(summary)))
+  })
+}
+
 function normalizeType(source, index) {
   if (source?.source_type === 'patent') return 'patent'
   if (source?.source_type === 'report' || source?.source_type === 'experiment') return 'technical'
@@ -106,6 +121,15 @@ function formatTimestamp(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date)
+}
+
+function documentParseStatusLabel(value) {
+  const status = compactText(value).toLowerCase()
+  if (status === 'parsed') return 'Обработан'
+  if (status === 'uploaded') return 'Загружен'
+  if (status === 'failed') return 'Ошибка парсинга'
+  if (status === 'unsupported') return 'Формат не поддерживается'
+  return compactText(value)
 }
 
 function fileExtension(filename) {
@@ -323,6 +347,7 @@ function KnowledgeCard({ item, selected, onToggle, onOpenDetails, onDeleteSource
       <footer className="source-card__footer">
         <span>{item.author}<small>{item.yearLabel}</small></span>
         <div className="source-card__actions">
+          <button type="button" onClick={() => onOpenDetails?.(item)}>Подробнее</button>
           {item.kind === 'source' && (
             <>
               <button type="button" onClick={() => onOpenDetails?.(item)}>Подробнее</button>
@@ -403,6 +428,99 @@ function SourceDetailsModal({ item, source, loading, error, onClose }) {
               <h4>Полный текст</h4>
               <div className="source-details__content">
                 {String(details?.content || '').trim() || 'Полный текст для этого источника не сохранён.'}
+              </div>
+            </section>
+          </>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+function DocumentDetailsModal({ item, document, loading, error, onClose }) {
+  const details = document || item || {}
+  const metaItems = [
+    { label: 'Тип файла', value: compactText(details?.file_type || item?.label).toUpperCase() },
+    { label: 'Статус', value: documentParseStatusLabel(details?.parse_status) },
+    { label: 'Авторы', value: compactText(details?.metadata?.authors || details?.authors) },
+    { label: 'Год', value: compactText(details?.metadata?.year || details?.year) },
+    { label: 'Фрагменты', value: Number.isFinite(Number(details?.chunk_count)) ? String(details.chunk_count) : '' },
+    { label: 'Таблицы', value: Number.isFinite(Number(details?.table_count)) ? String(details.table_count) : '' },
+    { label: 'Обновлен', value: formatTimestamp(details?.updated_at) },
+    { label: 'Добавлен', value: formatTimestamp(details?.created_at) },
+  ].filter((entry) => entry.value)
+
+  const title = compactText(
+    details?.metadata?.title
+      || details?.filename
+      || item?.title,
+  ) || 'Документ'
+
+  const savedDescription = compactText(
+    details?.summary
+      || details?.metadata?.summary
+      || details?.description
+      || details?.metadata?.description
+      || details?.raw_text_preview
+      || item?.summary,
+  )
+  const extractedDescription = clipped(details?.raw_text || details?.raw_text_preview, 260)
+  const description = !savedDescription || looksLikeTitleOnlySummary(
+    savedDescription,
+    title,
+    details?.metadata?.title,
+    details?.filename,
+    item?.title,
+  )
+    ? extractedDescription || savedDescription
+    : savedDescription
+
+  const content = String(details?.raw_text || details?.raw_text_preview || '').trim()
+
+  return (
+    <Modal
+      title={title}
+      onClose={onClose}
+      className="modal--source-details"
+      footer={(
+        <button className="btn primary" type="button" onClick={onClose}>
+          Закрыть
+        </button>
+      )}
+    >
+      <div className="source-details">
+        <div className="source-details__badges">
+          <span className={`source-kind source-kind--${item?.type || 'article'}`}>
+            <Icon name="file" />
+            {item?.label || 'Документ'}
+          </span>
+        </div>
+
+        {metaItems.length > 0 && (
+          <div className="source-details__meta">
+            {metaItems.map((entry) => (
+              <div key={entry.label} className="source-details__meta-item">
+                <span>{entry.label}</span>
+                <strong>{entry.value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {loading && <div className="source-details__state">Загружаем данные файла...</div>}
+        {!loading && error && <div className="source-details__state source-details__state--error">{error}</div>}
+
+        {!loading && (
+          <>
+            <section className="source-details__section">
+              <h4>Краткое описание файла</h4>
+              <p>{description || 'Описание файла пока не сформировано.'}</p>
+            </section>
+
+            <section className="source-details__section">
+              <h4>Извлеченный текст</h4>
+              <div className="source-details__content">
+                {content || 'Парсер еще не сохранил извлеченный текст для этого файла.'}
               </div>
             </section>
           </>
@@ -572,7 +690,7 @@ export default function KnowledgePanel({
   }
 
   async function openSourceDetails(item) {
-    if (!item || item.kind !== 'source') return
+    if (!item) return
 
     const requestId = sourceRequestRef.current + 1
     sourceRequestRef.current = requestId
@@ -582,7 +700,9 @@ export default function KnowledgePanel({
     setOpenedSourceError('')
 
     try {
-      const payload = await api.getSource(item.entityId)
+      const payload = item.kind === 'document'
+        ? await api.getDocument(item.entityId, true)
+        : await api.getSource(item.entityId)
       if (sourceRequestRef.current !== requestId) return
       setOpenedSource(payload)
     } catch (error) {
@@ -608,6 +728,7 @@ export default function KnowledgePanel({
     if (!window.confirm(`Удалить файл «${item.title}»?`)) return
     await onDeleteDocument(item.entityId)
     clearSelection(item.id)
+    if (openedSourceItem?.id === item.id) closeSourceDetails()
   }
 
   async function handleFile(file) {
@@ -892,13 +1013,23 @@ export default function KnowledgePanel({
       </section>
 
       {openedSourceItem && (
-        <SourceDetailsModal
-          item={openedSourceItem}
-          source={openedSource}
-          loading={openingSource}
-          error={openedSourceError}
-          onClose={closeSourceDetails}
-        />
+        openedSourceItem.kind === 'document' ? (
+          <DocumentDetailsModal
+            item={openedSourceItem}
+            document={openedSource}
+            loading={openingSource}
+            error={openedSourceError}
+            onClose={closeSourceDetails}
+          />
+        ) : (
+          <SourceDetailsModal
+            item={openedSourceItem}
+            source={openedSource}
+            loading={openingSource}
+            error={openedSourceError}
+            onClose={closeSourceDetails}
+          />
+        )
       )}
     </section>
   )

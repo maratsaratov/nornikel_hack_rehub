@@ -36,6 +36,25 @@ from ingestion.service import (
     save_upload,
 )
 
+
+def _configure_logging():
+    root_logger = logging.getLogger()
+    gunicorn_logger = logging.getLogger("gunicorn.error")
+
+    if gunicorn_logger.handlers:
+        root_logger.handlers = list(gunicorn_logger.handlers)
+        root_logger.setLevel(gunicorn_logger.level or logging.INFO)
+    elif not root_logger.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            force=True,
+        )
+    else:
+        root_logger.setLevel(logging.INFO)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 

@@ -81,6 +81,10 @@
   background: #f9fafc;
 }
 
+.project-switcher > span:first-of-type {
+  display: none;
+}
+
 .project-switcher > span:first-child {
   color: #7f8590;
   font-size: 11px;
@@ -105,6 +109,29 @@
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none; 
+}
+
+.project-switcher__create {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #7f8590;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.project-switcher__create:hover {
+  color: #4d5561;
+}
+
+.project-switcher__create:focus-visible {
+  outline: 2px solid rgba(63, 140, 255, 0.35);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 
 .project-switcher__arrow {

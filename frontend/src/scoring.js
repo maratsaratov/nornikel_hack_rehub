@@ -13,7 +13,11 @@ export const DIMS = [
 
 // Оценки с учётом экспертных правок
 export function effectiveScores(h) {
-  return { ...(h.scores || {}), ...(h.expert_scores || {}) }
+  const base = { ...(h.scores || {}) }
+  for (const [key, value] of Object.entries(h.expert_scores || {})) {
+    if (value != null) base[key] = value
+  }
+  return base
 }
 
 // composite = Σ(w_i·s_i)/Σ(w_i), вклад риска = (100 - risk)

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 
+from ai_parser_agent import ParserAIAgent, ParserAIAgentError
 from config import Config
 from db import db
 from ingestion.chunking import build_chunks
@@ -34,6 +35,9 @@ EXTRACTORS = {
 SUMMARY_MAX_CHARS = 220
 SUMMARY_MIN_ALPHA_CHARS = 12
 SUMMARY_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+SUMMARY_SAMPLE_BLOCK_CHARS = 900
+SUMMARY_TABLE_SAMPLE_ROWS = 3
+SUMMARY_TABLE_SAMPLE_COLS = 6
 
 
 class IngestionError(RuntimeError):
@@ -66,9 +70,119 @@ def _trim_summary(text: str, limit: int = SUMMARY_MAX_CHARS) -> str:
     return clipped.rstrip(" ,;:-") + "..."
 
 
-def _build_document_summary(result) -> str | None:
+def _summary_key(text: str | None) -> str:
+    return "".join(char.lower() for char in str(text or "") if char.isalnum())
+
+
+def _normalize_block_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _append_summary_block(blocks: list[str], seen: set[str], text: str, *, title: str | None = None) -> None:
+    normalized = _normalize_block_text(text)
+    if len(normalized) < 40 and sum(1 for char in normalized if char.isalpha()) < SUMMARY_MIN_ALPHA_CHARS:
+        return
+    if title:
+        normalized_title = _normalize_block_text(title)
+        if normalized_title and _summary_key(normalized_title) not in _summary_key(normalized[: min(len(normalized), 220)]):
+            normalized = f"{normalized_title}\n{normalized}"
+            normalized = _normalize_block_text(normalized)
+    key = _summary_key(normalized[:320])
+    if not key or key in seen:
+        return
+    seen.add(key)
+    blocks.append(normalized)
+
+
+def _table_sample_columns(table) -> list[str]:
+    columns = [str(column).strip() for column in getattr(table, "columns", []) if str(column or "").strip()]
+    return columns[:SUMMARY_TABLE_SAMPLE_COLS]
+
+
+def _table_sample_rows(table, columns: list[str]) -> list[str]:
+    sample_rows = []
+    fallback_keys = []
+    rows = list(getattr(table, "rows", []) or [])
+    if len(rows) <= SUMMARY_TABLE_SAMPLE_ROWS:
+        selected_indexes = list(range(len(rows)))
+    else:
+        selected_indexes = [0, len(rows) // 2, len(rows) - 1]
+
+    seen_indexes = set()
+    for row_index in selected_indexes:
+        if row_index in seen_indexes or row_index < 0 or row_index >= len(rows):
+            continue
+        seen_indexes.add(row_index)
+        row = rows[row_index]
+        if not isinstance(row, dict):
+            continue
+        if not fallback_keys:
+            fallback_keys = [str(key).strip() for key in row.keys() if str(key or "").strip()]
+        selected_columns = columns or fallback_keys[:SUMMARY_TABLE_SAMPLE_COLS]
+        cells = []
+        for column in selected_columns[:SUMMARY_TABLE_SAMPLE_COLS]:
+            value = _normalize_block_text(row.get(column))
+            if not value:
+                continue
+            cells.append(f"{column}={value}")
+        if cells:
+            sample_rows.append(f"Row {row_index + 1}: " + "; ".join(cells))
+    return sample_rows
+
+
+def _build_table_summary_block(table) -> str:
+    name = _normalize_block_text(getattr(table, "name", "") or getattr(table, "sheet_name", "") or "data")
+    details = [f"Table {name}", f"Rows: {len(getattr(table, 'rows', []) or [])}"]
+    classification = _normalize_block_text(getattr(table, "classification", ""))
+    if classification:
+        details.append(f"Type: {classification}")
+
+    columns = _table_sample_columns(table)
+    if columns:
+        details.append(f"Columns: {', '.join(columns)}")
+
+    sample_rows = _table_sample_rows(table, columns)
+    block = ". ".join(details)
+    if sample_rows:
+        block = f"{block}. Sample rows: " + " | ".join(sample_rows)
+    return block
+
+
+def _summary_title_candidates(document: SourceDocument | None, result) -> list[str]:
     metadata = dict(result.metadata or {})
-    title = str(metadata.get("title") or "").strip().lower()
+    candidates = [
+        metadata.get("title"),
+        metadata.get("subject"),
+        metadata.get("filename"),
+    ]
+    if document:
+        candidates.extend([
+            document.filename,
+            os.path.splitext(document.filename or "")[0],
+        ])
+    return [str(value).strip() for value in candidates if str(value or "").strip()]
+
+
+def _looks_like_title_only(summary: str | None, *candidates: str) -> bool:
+    summary_key = _summary_key(summary)
+    if len(summary_key) < SUMMARY_MIN_ALPHA_CHARS:
+        return True
+    for candidate in candidates:
+        candidate_key = _summary_key(candidate)
+        if not candidate_key:
+            continue
+        if summary_key == candidate_key:
+            return True
+        if len(summary_key) <= len(candidate_key) + 12 and (
+            summary_key.startswith(candidate_key) or candidate_key.startswith(summary_key)
+        ):
+            return True
+    return False
+
+
+def _build_document_summary(document: SourceDocument | None, result) -> str | None:
+    metadata = dict(result.metadata or {})
+    title_candidates = _summary_title_candidates(document, result)
     candidates = []
 
     for block in re.split(r"\n{2,}", result.raw_text or ""):
@@ -76,8 +190,7 @@ def _build_document_summary(result) -> str | None:
             fragment = _normalize_summary_fragment(sentence)
             if not fragment:
                 continue
-            lowered = fragment.lower()
-            if title and lowered == title:
+            if _looks_like_title_only(fragment, *title_candidates):
                 continue
             candidates.append(fragment)
             if len(candidates) >= 6:
@@ -97,7 +210,9 @@ def _build_document_summary(result) -> str | None:
             break
 
     if unique_fragments:
-        return _trim_summary(" ".join(unique_fragments))
+        summary = _trim_summary(" ".join(unique_fragments))
+        if not _looks_like_title_only(summary, *title_candidates):
+            return summary
 
     sheet_names = [str(name).strip() for name in metadata.get("sheet_names") or [] if str(name).strip()]
     if result.file_type in {"xlsx", "csv"} or metadata.get("source_type") == "dataset":
@@ -113,10 +228,207 @@ def _build_document_summary(result) -> str | None:
 
     first_section = next((section.text for section in result.sections if getattr(section, "text", "").strip()), "")
     fragment = _normalize_summary_fragment(first_section)
-    if fragment:
+    if fragment and not _looks_like_title_only(fragment, *title_candidates):
         return _trim_summary(fragment)
 
+    for table in result.tables:
+        table_fragment = _normalize_summary_fragment(_build_table_summary_block(table))
+        if table_fragment and not _looks_like_title_only(table_fragment, *title_candidates):
+            return _trim_summary(table_fragment)
+
     return None
+
+
+def _build_summary_blocks(result) -> list[str]:
+    blocks = []
+    seen = set()
+    for section in result.sections:
+        body = str(getattr(section, "text", "") or "").strip()
+        if not body:
+            continue
+        section_title = str(getattr(section, "title", "") or "").strip()
+        _append_summary_block(blocks, seen, body, title=section_title)
+
+    for table in getattr(result, "tables", []) or []:
+        _append_summary_block(
+            blocks,
+            seen,
+            _build_table_summary_block(table),
+            title=getattr(table, "name", None) or getattr(table, "sheet_name", None),
+        )
+
+    if blocks:
+        return blocks
+
+    for block in re.split(r"\n{2,}", str(result.raw_text or "")):
+        _append_summary_block(blocks, seen, block)
+    return blocks
+
+
+def _sample_block_text(text: str, limit: int) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) <= limit:
+        return normalized
+    head_limit = max(int(limit * 0.6), 120)
+    tail_limit = max(limit - head_limit - 5, 80)
+    head = normalized[:head_limit].rstrip(" ,;:-")
+    tail = normalized[-tail_limit:].lstrip(" ,;:-")
+    return f"{head} ... {tail}".strip()
+
+
+def _sample_blocks(blocks: list[str], char_limit: int) -> str:
+    if not blocks:
+        return ""
+
+    total = len(blocks)
+    if total <= 5:
+        indexes = list(range(total))
+    else:
+        indexes = [0, 1, total // 2, max(total - 2, 0), total - 1]
+
+    ordered_indexes = []
+    seen = set()
+    for index in indexes:
+        bounded = max(0, min(total - 1, index))
+        if bounded in seen:
+            continue
+        seen.add(bounded)
+        ordered_indexes.append(bounded)
+
+    parts = []
+    consumed = 0
+    remaining_slots = max(len(ordered_indexes), 1)
+    for index in ordered_indexes:
+        remaining_budget = char_limit - consumed
+        if remaining_budget < 120:
+            break
+        block_limit = min(
+            SUMMARY_SAMPLE_BLOCK_CHARS,
+            max(180, remaining_budget // remaining_slots),
+        )
+        sampled = _sample_block_text(blocks[index], block_limit)
+        if not sampled:
+            remaining_slots -= 1
+            continue
+        parts.append(sampled)
+        consumed += len(sampled) + 2
+        remaining_slots -= 1
+
+    return "\n\n".join(parts).strip()
+
+
+def _collect_summary_text(result) -> str:
+    raw_text = str(result.raw_text or "").strip()
+    char_limit = max(Config.AI_PARSER_AGENT_MAX_INPUT_CHARS, SUMMARY_MAX_CHARS)
+    sampled_blocks = _sample_blocks(_build_summary_blocks(result), char_limit)
+    if sampled_blocks:
+        return sampled_blocks
+
+    return raw_text[:char_limit]
+
+
+def _build_ai_document_summary(document: SourceDocument, result) -> tuple[str | None, dict]:
+    if not Config.AI_PARSER_AGENT_ENABLED:
+        logger.info(
+            "Skipping AI summary document_id=%s filename=%s reason=parser_agent_disabled",
+            document.id,
+            document.filename,
+        )
+        return None, {}
+    if not Config.OPENAI_API_KEY:
+        logger.info(
+            "Skipping AI summary document_id=%s filename=%s reason=missing_openai_api_key",
+            document.id,
+            document.filename,
+        )
+        return None, {}
+
+    summary_text = _collect_summary_text(result)
+    alpha_chars = sum(1 for char in summary_text if char.isalpha())
+    logger.info(
+        "Prepared AI summary payload document_id=%s filename=%s file_type=%s raw_text_chars=%s sampled_chars=%s alpha_chars=%s sections=%s chunks=%s tables=%s",
+        document.id,
+        document.filename,
+        result.file_type,
+        len(result.raw_text or ""),
+        len(summary_text),
+        alpha_chars,
+        len(result.sections),
+        len(result.chunks),
+        len(result.tables),
+    )
+    if alpha_chars < SUMMARY_MIN_ALPHA_CHARS:
+        logger.info(
+            "Skipping AI summary document_id=%s filename=%s reason=insufficient_alpha_chars alpha_chars=%s threshold=%s",
+            document.id,
+            document.filename,
+            alpha_chars,
+            SUMMARY_MIN_ALPHA_CHARS,
+        )
+        return None, {}
+
+    title = str((result.metadata or {}).get("title") or "").strip() or None
+    try:
+        logger.info(
+            "Invoking parser AI summary document_id=%s filename=%s provider=%s model=%s title_present=%s",
+            document.id,
+            document.filename,
+            Config.AI_PARSER_AGENT_PROVIDER,
+            Config.AI_PARSER_AGENT_MODEL,
+            bool(title),
+        )
+        agent = ParserAIAgent()
+        response = agent.summarize_text(
+            summary_text,
+            file_name=document.filename,
+            file_type=result.file_type,
+            title=title,
+        )
+    except ParserAIAgentError as exc:
+        logger.info(
+            "Skipping AI summary document_id=%s filename=%s reason=%s",
+            document.id,
+            document.filename,
+            exc,
+        )
+        return None, {}
+    except Exception as exc:
+        logger.warning(
+            "Failed AI summary document_id=%s filename=%s error=%s",
+            document.id,
+            document.filename,
+            exc,
+        )
+        return None, {}
+
+    summary = _trim_summary(response.get("summary") or "")
+    title_candidates = _summary_title_candidates(document, result)
+    if _looks_like_title_only(summary, *title_candidates):
+        logger.info(
+            "Discarding title-like AI summary document_id=%s filename=%s summary=%s",
+            document.id,
+            document.filename,
+            summary,
+        )
+        return None, response.get("agent") or {}
+    if not summary:
+        logger.info(
+            "Discarding empty AI summary document_id=%s filename=%s provider=%s model=%s",
+            document.id,
+            document.filename,
+            (response.get("agent") or {}).get("provider"),
+            (response.get("agent") or {}).get("model"),
+        )
+        return None, response.get("agent") or {}
+
+    logger.info(
+        "Generated AI summary document_id=%s filename=%s provider=%s model=%s",
+        document.id,
+        document.filename,
+        (response.get("agent") or {}).get("provider"),
+        (response.get("agent") or {}).get("model"),
+    )
+    return summary, response.get("agent") or {}
 
 
 def _too_large_error() -> str:
@@ -320,13 +632,27 @@ def _replace_document_content(document: SourceDocument, result):
     document.raw_text = result.raw_text
 
     metadata = dict(result.metadata or {})
-    summary = _build_document_summary(result)
+    heuristic_summary = _build_document_summary(document, result)
+    ai_summary, ai_agent = _build_ai_document_summary(document, result)
+    summary = ai_summary or heuristic_summary
     if summary:
         metadata["summary"] = summary
         metadata["description"] = summary
+        metadata["summary_source"] = "ai" if ai_summary else "heuristic"
+        if ai_agent.get("provider"):
+            metadata["summary_provider"] = ai_agent["provider"]
+        else:
+            metadata.pop("summary_provider", None)
+        if ai_agent.get("model"):
+            metadata["summary_model"] = ai_agent["model"]
+        else:
+            metadata.pop("summary_model", None)
     else:
         metadata.pop("summary", None)
         metadata.pop("description", None)
+        metadata.pop("summary_source", None)
+        metadata.pop("summary_provider", None)
+        metadata.pop("summary_model", None)
     document.metadata_json = metadata
 
     for index, chunk in enumerate(result.chunks):
@@ -351,7 +677,7 @@ def _replace_document_content(document: SourceDocument, result):
         document.id,
         len(result.chunks),
         len(result.tables),
-        sorted((result.metadata or {}).keys()),
+        sorted(metadata.keys()),
         perf_counter() - started_at,
     )
 

@@ -673,6 +673,10 @@
   color: var(--blue);
 }
 
+.source-card__actions > button:nth-child(2):nth-last-child(2) {
+  display: none;
+}
+
 .source-card__delete {
   width: 32px;
   height: 32px;

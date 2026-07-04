@@ -30,14 +30,16 @@ def _format_context(items):
     for i, item in enumerate(items, start=1):
         s = item["source"]
         sid = f"S{i}"
-        id_map[sid] = s.id
+        id_map[sid] = getattr(s, "retrieval_id", s.id)
         origin = getattr(s, "origin", None)
         meta = " · ".join(filter(None, [
             {"literature": "литература", "report": "отчёт", "experiment": "эксперимент",
-             "dataset": "набор данных"}.get(s.source_type, s.source_type),
+             "dataset": "набор данных", "uploaded_document": "загруженный документ"}.get(s.source_type, s.source_type),
             str(s.year) if s.year else None,
             s.authors or None,
             f"источник: {origin}" if origin and origin != "manual" else None,
+            f"раздел: {item.get('section_title')}" if item.get("section_title") else None,
+            f"страница/лист: {item.get('page_ref')}" if item.get("page_ref") else None,
         ]))
         rr = item.get("rerank_score")
         if isinstance(rr, (int, float)):

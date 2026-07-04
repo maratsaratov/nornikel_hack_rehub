@@ -17,6 +17,7 @@ from config import Config
 import bm25
 import embeddings
 import reranker
+from models import DocumentChunk
 
 
 def chunk_text(text: str, size: int = None, overlap: int = None) -> list[str]:
@@ -49,9 +50,43 @@ def chunk_text(text: str, size: int = None, overlap: int = None) -> list[str]:
 def _passages(sources) -> list[dict]:
     out = []
     for s in sources:
+        source_kind = getattr(s, "retrieval_kind", "source")
+        source_key = getattr(s, "retrieval_id", getattr(s, "id", None))
+        if source_kind == "document":
+            chunks = s.chunks.order_by(DocumentChunk.chunk_index.asc()).all()
+            for chunk in chunks:
+                text = " ".join(str(chunk.text or "").split()).strip()
+                if not text:
+                    continue
+                prefix = " / ".join(filter(None, [
+                    str(chunk.section_title or "").strip(),
+                    f"page {chunk.page_ref}" if chunk.page_ref else None,
+                ]))
+                if prefix and prefix.lower() not in text[: min(len(text), len(prefix) + 40)].lower():
+                    text = f"{prefix}. {text}"
+                out.append({
+                    "source": s,
+                    "source_key": source_key,
+                    "source_kind": source_kind,
+                    "chunk": chunk.chunk_index,
+                    "text": text,
+                    "page_ref": chunk.page_ref,
+                    "section_title": chunk.section_title,
+                })
+            if chunks:
+                continue
+
         body = f"{s.title}. {s.content or ''}".strip()
         for i, ch in enumerate(chunk_text(body)):
-            out.append({"source": s, "chunk": i, "text": ch})
+            out.append({
+                "source": s,
+                "source_key": source_key,
+                "source_kind": source_kind,
+                "chunk": i,
+                "text": ch,
+                "page_ref": None,
+                "section_title": None,
+            })
     return out
 
 
@@ -163,6 +198,10 @@ def retrieve(query, sources, top_k=6, candidates=None, use_rerank=True,
         p = passages[x["index"]]
         cand.append({
             "source": p["source"], "passage": p["text"],
+            "source_key": p.get("source_key"),
+            "source_kind": p.get("source_kind"),
+            "page_ref": p.get("page_ref"),
+            "section_title": p.get("section_title"),
             "bm25_score": x["bm25_score"], "dense_score": x["dense_score"],
             "hybrid_score": round(x["score"], 6), "rerank_score": None,
             "terms": x["terms"], "lang": x["lang"],
@@ -191,7 +230,7 @@ def retrieve(query, sources, top_k=6, candidates=None, use_rerank=True,
     # ── Диверсификация: лучший пассаж на источник, затем top_k источников ─────
     seen, diversified = {}, []
     for c in cand:
-        sid = c["source"].id
+        sid = c.get("source_key") or getattr(c["source"], "retrieval_id", c["source"].id)
         if seen.get(sid, 0) >= per_source:
             continue
         seen[sid] = seen.get(sid, 0) + 1

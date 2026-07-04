@@ -199,6 +199,15 @@ export default function App() {
           </nav>
 
           <div className="project-switcher">
+            <button
+              type="button"
+              className="project-switcher__create"
+              onClick={() => setProjectModal('new')}
+              aria-label="Создать новый проект"
+              title="Создать новый проект"
+            >
+              Проект
+            </button>
             <span>Проект</span>
             {projects.length > 0 ? (
               <select value={currentId || ''} onChange={(e) => setCurrentId(Number(e.target.value))} aria-label="Выбор проекта">
@@ -241,7 +250,9 @@ export default function App() {
                 project={project}
                 flash={flash}
                 onDeleteSource={deleteSource}
+                onDeleteDocument={deleteDocument}
                 sources={sources}
+                documents={documents}
               />
             )}
             {currentRoute === '#target' && (

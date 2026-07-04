@@ -107,6 +107,14 @@ class KnowledgeSource(db.Model):
             d["content"] = self.content
         return d
 
+    @property
+    def retrieval_kind(self) -> str:
+        return "source"
+
+    @property
+    def retrieval_id(self) -> str:
+        return f"source:{self.id}"
+
 
 class SourceDocument(db.Model):
     """Uploaded source file parsed by the deterministic ingestion subsystem."""
@@ -155,6 +163,56 @@ class SourceDocument(db.Model):
         if with_raw_text:
             data["raw_text"] = raw
         return data
+
+    @property
+    def title(self) -> str:
+        metadata = self.metadata_json or {}
+        return str(metadata.get("title") or self.filename or "").strip()
+
+    @property
+    def content(self) -> str:
+        metadata = self.metadata_json or {}
+        return str(self.raw_text or metadata.get("summary") or metadata.get("description") or "").strip()
+
+    @property
+    def source_type(self) -> str:
+        metadata = self.metadata_json or {}
+        if metadata.get("source_type"):
+            return str(metadata["source_type"])
+        if self.file_type in {"xlsx", "csv"}:
+            return "dataset"
+        return "uploaded_document"
+
+    @property
+    def origin(self) -> str:
+        return "upload"
+
+    @property
+    def authors(self) -> str | None:
+        metadata = self.metadata_json or {}
+        value = metadata.get("authors")
+        if isinstance(value, list):
+            cleaned = [str(item).strip() for item in value if str(item).strip()]
+            return ", ".join(cleaned) if cleaned else None
+        text = str(value or "").strip()
+        return text or None
+
+    @property
+    def year(self) -> int | None:
+        metadata = self.metadata_json or {}
+        value = metadata.get("year")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def retrieval_kind(self) -> str:
+        return "document"
+
+    @property
+    def retrieval_id(self) -> str:
+        return f"document:{self.id}"
 
 
 class DocumentChunk(db.Model):

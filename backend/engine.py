@@ -8,7 +8,7 @@
   5. Итоговый ранг — прозрачная формула composite_score (models.py)
 """
 from db import db
-from models import Project, Hypothesis, GenerationRun, composite_score, DEFAULT_WEIGHTS
+from models import Project, Hypothesis, GenerationRun, SourceDocument, composite_score, DEFAULT_WEIGHTS
 import rag
 import local_kb
 from prompts import build_generation_prompt, build_weight_prompt
@@ -63,6 +63,14 @@ def _build_query(project: Project, topic: str = None) -> str:
     ]))
 
 
+def _collect_retrieval_sources(project: Project):
+    parsed_documents = []
+    for document in project.documents.filter_by(parse_status="parsed").order_by(SourceDocument.created_at.desc()).all():
+        if document.chunks.count() or (document.raw_text or "").strip():
+            parsed_documents.append(document)
+    return project.sources.all() + parsed_documents + local_kb.get_sources()
+
+
 def suggest_weights(project_id: int) -> dict:
     """Модель предлагает веса ранжирования под конкретный проект/стадию."""
     project = db.session.get(Project, project_id)
@@ -101,18 +109,25 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         weights, weight_mode = dict(DEFAULT_WEIGHTS), "default"
     weights = _normalize_weights(weights)
 
-    sources = project.sources.all() + local_kb.get_sources()
+    sources = _collect_retrieval_sources(project)
     query = _build_query(project, topic)
 
     # ── 1. RAG: TF-IDF → реранкер ────────────────────────────────────────────
     rag_out = rag.retrieve(query, sources, top_k=top_k, candidates=candidate_pool, use_rerank=use_rerank)
     items = rag_out["items"]
-    src_by_id = {it["source"].id: it["source"] for it in items}
+    src_by_id = {
+        it.get("source_key") or getattr(it["source"], "retrieval_id", f"source:{it['source'].id}"): it["source"]
+        for it in items
+    }
     retrieved_log = [{
+        "source_key": it.get("source_key") or getattr(it["source"], "retrieval_id", f"source:{it['source'].id}"),
+        "source_kind": it.get("source_kind") or getattr(it["source"], "retrieval_kind", "source"),
         "source_id": it["source"].id,
         "title": it["source"].title,
         "type": it["source"].source_type,
         "origin": getattr(it["source"], "origin", None),
+        "page_ref": it.get("page_ref"),
+        "section_title": it.get("section_title"),
         "bm25_score": it["bm25_score"],
         "dense_score": it.get("dense_score"),
         "hybrid_score": it.get("hybrid_score"),
@@ -159,10 +174,12 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         evidence = []
         for ev in (item.get("evidence") or []):
             sid = str(ev.get("source_id", "")).strip().upper().lstrip("[").rstrip("]")
-            real_id = id_map.get(sid)
-            src = src_by_id.get(real_id)
+            real_key = id_map.get(sid)
+            src = src_by_id.get(real_key)
             evidence.append({
-                "source_id": real_id,
+                "source_key": real_key,
+                "source_kind": getattr(src, "retrieval_kind", None) if src else None,
+                "source_id": getattr(src, "id", None) if src else None,
                 "title": src.title if src else ev.get("title"),
                 "snippet": ev.get("snippet"),
                 "relevance": ev.get("relevance"),
