@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
 import { effectiveScores, rankHypotheses } from '../scoring.js'
+import { projectStorageKey, readStorage, writeStorage } from '../storage.js'
 import { Modal } from './ui.jsx'
 import HypothesisRoadmapModal from './HypothesisRoadmapModal.jsx'
 
@@ -27,6 +28,14 @@ const SORT_OPTIONS = [
 ]
 
 const SEEN_HYPOTHESES_STORAGE_KEY = 'hypothesis-factory.seen-hypotheses'
+const GENERATION_SETTINGS_STORAGE_SCOPE = 'generation-settings'
+const DEFAULT_GENERATION_PARAMS = { n: 5, top_k: 6 }
+const DEFAULT_GENERATION_WEIGHTS = {
+  novelty: 80,
+  value: 95,
+  feasibility: 40,
+  risk: 20,
+}
 
 const VERDICTS = [
   { key: 'proposed', label: 'Новая' },
@@ -187,6 +196,49 @@ function formatRankFormula(weights) {
   ].join(' + ')
 }
 
+function clampNumber(value, min, max, fallback) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.max(min, Math.min(max, numeric))
+}
+
+function normalizeGenerationParams(value) {
+  return {
+    n: clampNumber(value?.n, 1, 10, DEFAULT_GENERATION_PARAMS.n),
+    top_k: clampNumber(value?.top_k, 1, 15, DEFAULT_GENERATION_PARAMS.top_k),
+  }
+}
+
+function normalizeGenerationWeights(value) {
+  return {
+    novelty: clampNumber(value?.novelty, 0, 100, DEFAULT_GENERATION_WEIGHTS.novelty),
+    value: clampNumber(value?.value, 0, 100, DEFAULT_GENERATION_WEIGHTS.value),
+    feasibility: clampNumber(value?.feasibility, 0, 100, DEFAULT_GENERATION_WEIGHTS.feasibility),
+    risk: clampNumber(value?.risk, 0, 100, DEFAULT_GENERATION_WEIGHTS.risk),
+  }
+}
+
+function normalizeSortBy(value) {
+  return SORT_OPTIONS.some((option) => option.key === value) ? value : 'rank'
+}
+
+function readGenerationSettings(projectId) {
+  const stored = readStorage(projectStorageKey(GENERATION_SETTINGS_STORAGE_SCOPE, projectId), null)
+  if (!stored || typeof stored !== 'object') {
+    return {
+      params: { ...DEFAULT_GENERATION_PARAMS },
+      weights: { ...DEFAULT_GENERATION_WEIGHTS },
+      sortBy: 'rank',
+    }
+  }
+
+  return {
+    params: normalizeGenerationParams(stored.params),
+    weights: normalizeGenerationWeights(stored.weights),
+    sortBy: normalizeSortBy(stored.sortBy),
+  }
+}
+
 export default function GenerationPanel({
   project,
   flash,
@@ -195,21 +247,20 @@ export default function GenerationPanel({
   sources = [],
   documents = [],
 }) {
+  const storageKey = projectStorageKey(GENERATION_SETTINGS_STORAGE_SCOPE, project?.id)
+  const initialSettings = readGenerationSettings(project?.id)
+
   const [generating, setGenerating] = useState(false)
-  const [params, setParams] = useState({ n: 5, top_k: 6 })
-  const [weights, setWeights] = useState({
-    novelty: 80,
-    value: 95,
-    feasibility: 40,
-    risk: 20,
-  })
+  const [params, setParams] = useState(initialSettings.params)
+  const [weights, setWeights] = useState(initialSettings.weights)
   const [rawHypotheses, setRawHypotheses] = useState([])
   const [latestRun, setLatestRun] = useState(null)
   const [openedHypothesisId, setOpenedHypothesisId] = useState(null)
   const [roadmapHypothesisId, setRoadmapHypothesisId] = useState(null)
-  const [sortBy, setSortBy] = useState('rank')
+  const [sortBy, setSortBy] = useState(initialSettings.sortBy)
   const [seenHypothesisIds, setSeenHypothesisIds] = useState(() => new Set())
   const [deletingKnowledgeKey, setDeletingKnowledgeKey] = useState('')
+  const [activeStorageKey, setActiveStorageKey] = useState(storageKey)
 
   useEffect(() => {
     if (!project) return
@@ -222,6 +273,24 @@ export default function GenerationPanel({
       setLatestRun(runs[0] || null)
     }).catch((error) => flash(error.message, 'err'))
   }, [project, flash])
+
+  useEffect(() => {
+    const settings = readGenerationSettings(project?.id)
+    setParams(settings.params)
+    setWeights(settings.weights)
+    setSortBy(settings.sortBy)
+    setActiveStorageKey(storageKey)
+  }, [project?.id, storageKey])
+
+  useEffect(() => {
+    if (!storageKey || activeStorageKey !== storageKey) return
+
+    writeStorage(storageKey, {
+      params,
+      weights,
+      sortBy,
+    })
+  }, [activeStorageKey, params, sortBy, storageKey, weights])
 
   useEffect(() => {
     if (!project?.id) {
@@ -464,14 +533,14 @@ export default function GenerationPanel({
                 <span>Количество гипотез</span>
                 <span>{params.n}</span>
               </label>
-              <input type="range" min="1" max="10" value={params.n} style={rangeStyle(params.n, 1, 10)} onChange={(e) => setParams({ ...params, n: Number(e.target.value) })} />
+              <input type="range" min="1" max="10" value={params.n} style={rangeStyle(params.n, 1, 10)} onChange={(e) => setParams((prev) => ({ ...prev, n: Number(e.target.value) }))} />
             </div>
             <div className="slider-group">
               <label>
                 <span>Источников в контексте</span>
                 <span>{params.top_k}</span>
               </label>
-              <input type="range" min="1" max="15" value={params.top_k} style={rangeStyle(params.top_k, 1, 15)} onChange={(e) => setParams({ ...params, top_k: Number(e.target.value) })} />
+              <input type="range" min="1" max="15" value={params.top_k} style={rangeStyle(params.top_k, 1, 15)} onChange={(e) => setParams((prev) => ({ ...prev, top_k: Number(e.target.value) }))} />
             </div>
             <div className="model-indicator">
               <span className="dot"></span> Модель: {latestRun?.model || 'deepseek/deepseek-v4-flash'}

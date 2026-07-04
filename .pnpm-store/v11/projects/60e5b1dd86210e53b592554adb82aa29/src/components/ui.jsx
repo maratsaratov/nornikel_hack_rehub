@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react'
 
-export function Modal({ title, children, onClose, footer }) {
+export function Modal({ title, children, onClose, footer, className = '' }) {
   useEffect(() => {
     const handler = (e) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', handler)
@@ -9,7 +9,7 @@ export function Modal({ title, children, onClose, footer }) {
 
   return (
     <div className="modal-overlay" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+      <div className={`modal ${className}`.trim()} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2>{title}</h2>
           <div className="spacer" />

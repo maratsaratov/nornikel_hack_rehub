@@ -26,6 +26,10 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek/deepseek-v4-flash")
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "7000"))
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
+
+    # ── Vision-модель для импорта изображений (.png/.jpg) в текстовый источник ─
+    IMAGE_MODEL = os.getenv("IMAGE_MODEL", "qwen/qwen3.7-plus")
+    IMAGE_MAX_TOKENS = int(os.getenv("IMAGE_MAX_TOKENS", "1500"))
     AI_PARSER_AGENT_ENABLED = _bool("AI_PARSER_AGENT_ENABLED", True)
     AI_PARSER_AGENT_PROVIDER = os.getenv("AI_PARSER_AGENT_PROVIDER", "routerai")
     AI_PARSER_AGENT_MODEL = os.getenv("AI_PARSER_AGENT_MODEL", "deepseek/deepseek-v4-flash")

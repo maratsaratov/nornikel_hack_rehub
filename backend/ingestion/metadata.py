@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Optional
 
 
-SUPPORTED_FILE_TYPES = {"pdf", "docx", "xlsx", "csv", "txt"}
+SUPPORTED_FILE_TYPES = {"pdf", "docx", "xlsx", "csv", "txt", "image"}
 
 EXTENSION_TO_TYPE = {
     ".pdf": "pdf",
@@ -14,6 +14,9 @@ EXTENSION_TO_TYPE = {
     ".csv": "csv",
     ".txt": "txt",
     ".doc": "doc",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
 }
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)

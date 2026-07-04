@@ -14,6 +14,7 @@ from ingestion.chunking import build_chunks
 from ingestion.extractors.base import ExtractorError, UnsupportedFormatError
 from ingestion.extractors.csv_extractor import CSVExtractor
 from ingestion.extractors.docx_extractor import DOCXExtractor
+from ingestion.extractors.image_extractor import ImageExtractor
 from ingestion.extractors.pdf_extractor import PDFExtractor
 from ingestion.extractors.txt_extractor import TXTExtractor
 from ingestion.extractors.xlsx_extractor import XLSXExtractor
@@ -30,6 +31,7 @@ EXTRACTORS = {
     "xlsx": XLSXExtractor,
     "csv": CSVExtractor,
     "txt": TXTExtractor,
+    "image": ImageExtractor,
 }
 
 SUMMARY_MAX_CHARS = 220

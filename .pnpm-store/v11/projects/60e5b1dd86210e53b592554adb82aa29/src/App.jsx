@@ -136,8 +136,16 @@ export default function App() {
   }
 
   async function deleteSource(id) {
-    await api.deleteSource(id)
-    setSources((prev) => prev.filter((s) => s.id !== id))
+    try {
+      await api.deleteSource(id)
+      setSources((prev) => prev.filter((s) => s.id !== id))
+      flash('Источник удалён')
+      return true
+    } catch (error) {
+      flash(error.message, 'err')
+      await reloadKnowledge()
+      return false
+    }
   }
 
   async function searchSources(query) {
@@ -159,6 +167,7 @@ export default function App() {
   async function deleteDocument(id) {
     await api.deleteDocument(id)
     setDocuments((prev) => prev.filter((doc) => doc.id !== id))
+    flash('Файл удалён')
   }
 
   const systemState = llmOk === null ? 'Проверка модулей' : llmOk ? 'Система активна' : 'Модель недоступна'
@@ -190,6 +199,15 @@ export default function App() {
           </nav>
 
           <div className="project-switcher">
+            <button
+              type="button"
+              className="project-switcher__create"
+              onClick={() => setProjectModal('new')}
+              aria-label="Создать новый проект"
+              title="Создать новый проект"
+            >
+              Проект
+            </button>
             <span>Проект</span>
             {projects.length > 0 ? (
               <select value={currentId || ''} onChange={(e) => setCurrentId(Number(e.target.value))} aria-label="Выбор проекта">
@@ -217,6 +235,8 @@ export default function App() {
                 project={project}
                 sources={sources}
                 documents={documents}
+                documentTypes={config?.supported_document_types}
+                maxUploadMb={config?.max_upload_mb}
                 onAdd={addSource}
                 onDelete={deleteSource}
                 onSearch={searchSources}
@@ -229,6 +249,10 @@ export default function App() {
               <GenerationPanel 
                 project={project}
                 flash={flash}
+                onDeleteSource={deleteSource}
+                onDeleteDocument={deleteDocument}
+                sources={sources}
+                documents={documents}
               />
             )}
             {currentRoute === '#target' && (
