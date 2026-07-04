@@ -16,7 +16,7 @@ const YEAR_META = {
   earlier: 'Ранее',
 }
 
-const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt']
+const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt', 'png', 'jpg', 'jpeg']
 const MAX_DOCUMENT_UPLOAD_MB = 25
 const EMPTY_OPENALEX_RESULTS = { query: '', local: [], external: [], external_error: null }
 const MIN_OPENALEX_QUERY_LENGTH = 2

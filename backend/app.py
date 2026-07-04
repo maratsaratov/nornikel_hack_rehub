@@ -337,7 +337,7 @@ def get_config():
         "default_sources": connectors.default_sources(),
         "local_knowledge": local_kb.status(),
         "max_upload_mb": Config.MAX_UPLOAD_MB,
-        "supported_document_types": ["pdf", "docx", "xlsx", "csv", "txt"],
+        "supported_document_types": ["pdf", "docx", "xlsx", "csv", "txt", "png", "jpg", "jpeg"],
     }
 
 
