@@ -22,6 +22,9 @@ EXPOSE 5000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
     CMD curl -fsS http://localhost:5000/api/health || exit 1
 
-# 2 workers, long timeout: цепочка acquire → предложение весов → генерация
-# (несколько LLM/сетевых вызовов подряд) может занимать до нескольких минут.
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "300", "-k", "uvicorn.workers.UvicornWorker", "wsgi:app"]
+# Параллельная обработка: несколько воркеров-процессов (WEB_CONCURRENCY, gunicorn
+# читает эту переменную), каждый — Uvicorn + пул потоков для sync-эндпоинтов.
+# Длинный timeout: цепочка acquire → веса → генерация может занимать минуты.
+# WEB_CONCURRENCY переопределяется в .env / docker-compose под ресурсы машины.
+ENV WEB_CONCURRENCY=4
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "--graceful-timeout", "30", "-k", "uvicorn.workers.UvicornWorker", "wsgi:app"]

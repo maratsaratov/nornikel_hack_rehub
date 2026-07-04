@@ -324,6 +324,30 @@ def _ensure_columns():
 
 
 @asynccontextmanager
+def _seed_demo_once():
+    """Засеять демо-данные ровно один раз — безопасно при нескольких воркерах.
+
+    Атомарный O_EXCL-маркер гарантирует, что при одновременном старте воркеров
+    посев выполнит только один процесс; seed_if_empty дополнительно ничего не делает,
+    если данные уже есть (персистентный том БД).
+    """
+    import os
+    import tempfile
+    from seed import seed_if_empty
+
+    marker = os.path.join(tempfile.gettempdir(), "hypofactory_seed.lock")
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        return  # другой воркер уже занимается посевом
+    try:
+        if seed_if_empty():
+            logger.info("Демо-база знаний засеяна.")
+    except Exception as e:  # noqa
+        logger.warning("Не удалось засеять демо-данные: %s", e)
+
+
 async def lifespan(_app: FastAPI):
     db.init_app(Config.SQLALCHEMY_DATABASE_URI, Config.SQLALCHEMY_ENGINE_OPTIONS)
     db.create_all()
@@ -339,12 +363,7 @@ async def lifespan(_app: FastAPI):
     elif kb_status["errors"]:
         logger.warning("Local knowledge library has load errors: %s", kb_status["errors"])
     if Config.SEED_DEMO:
-        try:
-            from seed import seed_if_empty
-            if seed_if_empty():
-                logger.info("Демо-база знаний засеяна.")
-        except Exception as e:  # noqa
-            logger.warning("Не удалось засеять демо-данные: %s", e)
+        _seed_demo_once()
     yield
 
 

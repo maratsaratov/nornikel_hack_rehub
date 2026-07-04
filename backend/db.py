@@ -61,6 +61,9 @@ class DB:
             opts.setdefault("connect_args", {"check_same_thread": False})
             if ":memory:" in database_url:
                 opts["poolclass"] = StaticPool
+                # StaticPool не принимает параметры размера пула
+                for key in ("pool_size", "max_overflow", "pool_timeout"):
+                    opts.pop(key, None)
         engine = create_engine(database_url, **opts)
         db_session.configure(bind=engine)
 

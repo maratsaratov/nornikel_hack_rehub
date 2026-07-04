@@ -18,7 +18,18 @@ class Config:
         "DATABASE_URL", "postgresql://hypo:hypo_secret@localhost:5432/hypofactory"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+    # Пул соединений под параллельную обработку: каждая генерация держит соединение
+    # ~1-2 мин (LLM), поэтому пул должен вмещать несколько одновременных запросов.
+    # На каждый gunicorn-воркер: pool_size + max_overflow соединений.
+    # Итог: WEB_CONCURRENCY × (pool_size + max_overflow) должно быть < max_connections
+    # Postgres (по умолчанию 100). Дефолт 4 воркера × (5+10) = 60 — с запасом.
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_pre_ping": True,
+        "pool_size": int(os.getenv("DB_POOL_SIZE", "5")),
+        "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "10")),
+        "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "1800")),
+        "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
+    }
 
     # ── LLM (OpenRouter / DeepSeek) ─────────────────────────────────────────
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
