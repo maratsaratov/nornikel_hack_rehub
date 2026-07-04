@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.js'
 import { rankHypotheses } from '../scoring.js'
 import { Modal } from './ui.jsx'
+import HypothesisRoadmapModal from './HypothesisRoadmapModal.jsx'
 
 const SCORE_ITEMS = [
   { key: 'novelty', label: 'Новизна' },
@@ -52,6 +53,7 @@ export default function GenerationPanel({ project, flash }) {
   const [rawHypotheses, setRawHypotheses] = useState([])
   const [latestRun, setLatestRun] = useState(null)
   const [openedHypothesisId, setOpenedHypothesisId] = useState(null)
+  const [roadmapHypothesisId, setRoadmapHypothesisId] = useState(null)
 
   useEffect(() => {
     if (!project) return
@@ -85,6 +87,16 @@ export default function GenerationPanel({ project, flash }) {
     return index >= 0 ? index + 1 : null
   }, [rankedHypotheses, openedHypothesisId])
 
+  const roadmapHypothesis = useMemo(
+    () => rankedHypotheses.find((item) => item.id === roadmapHypothesisId) || null,
+    [rankedHypotheses, roadmapHypothesisId],
+  )
+
+  const roadmapHypothesisRank = useMemo(() => {
+    const index = rankedHypotheses.findIndex((item) => item.id === roadmapHypothesisId)
+    return index >= 0 ? index + 1 : null
+  }, [rankedHypotheses, roadmapHypothesisId])
+
   const handleGenerate = async () => {
     setGenerating(true)
     const apiWeights = {
@@ -103,6 +115,7 @@ export default function GenerationPanel({ project, flash }) {
       setRawHypotheses(res.hypotheses)
       setLatestRun(res.run)
       setOpenedHypothesisId(null)
+      setRoadmapHypothesisId(null)
       flash('Гипотезы успешно сгенерированы!', 'ok')
     } catch (error) {
       flash(error.message, 'err')
@@ -123,10 +136,12 @@ export default function GenerationPanel({ project, flash }) {
   }
   const openComparisonPlaceholder = () => flash('Сравнение гипотез появится в следующем обновлении интерфейса.', 'err')
   const openRoadmapPlaceholder = () => flash('Дорожная карта появится после backend-поддержки.', 'err')
+  const openRoadmap = (hypothesisId) => setRoadmapHypothesisId(hypothesisId)
   const clearResults = () => {
     setRawHypotheses([])
     setLatestRun(null)
     setOpenedHypothesisId(null)
+    setRoadmapHypothesisId(null)
   }
 
   const wFormula = `rank = ${weights.novelty / 100} * novelty + ${weights.value / 100} * value + ${weights.feasibility / 100} * feasibility + ${weights.risk / 100} * (100 - risk)`
@@ -223,6 +238,7 @@ export default function GenerationPanel({ project, flash }) {
               </div>
 
               <div className="card-actions">
+                <button className="btn-outline btn-outline--roadmap" type="button" onClick={() => openRoadmap(h.id)}><Icon name="route" /> Дорожная карта</button>
                 <button className="btn-outline" type="button" onClick={() => setOpenedHypothesisId(h.id)}><Icon name="folder" /> Открыть</button>
                 <button className="btn-outline" type="button" onClick={openRoadmapPlaceholder}><Icon name="route" /> Дорожная карта</button>
               </div>
@@ -361,6 +377,16 @@ export default function GenerationPanel({ project, flash }) {
             )}
           </div>
         </Modal>
+      )}
+
+      {roadmapHypothesis && (
+        <HypothesisRoadmapModal
+          hypothesis={roadmapHypothesis}
+          hypothesisRank={roadmapHypothesisRank}
+          project={project}
+          retrieved={latestRun?.retrieved || []}
+          onClose={() => setRoadmapHypothesisId(null)}
+        />
       )}
     </div>
   )
