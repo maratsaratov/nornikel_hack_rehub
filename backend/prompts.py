@@ -57,11 +57,54 @@ def _format_context(items):
     return block, id_map
 
 
-def build_generation_prompt(project, items, n: int, topic: str = None):
-    """project: Project; items: rag-пассажи; n: сколько гипотез; topic: свободная тема (опц.)."""
+def _format_feedback(feedback):
+    """Блок обратной связи эксперта для промпта (механизм обучения на фидбэке).
+
+    feedback: {"confirmed": [{statement, note}], "refuted": [...], "reviewed": [...]}.
+    Подтверждённые направления модель развивает, отклонённые — не повторяет,
+    замечания — учитывает.
+    """
+    if not feedback:
+        return ""
+    confirmed = feedback.get("confirmed") or []
+    refuted = feedback.get("refuted") or []
+    reviewed = feedback.get("reviewed") or []
+    if not (confirmed or refuted or reviewed):
+        return ""
+
+    def _lines(entries, limit):
+        out = []
+        for e in entries[:limit]:
+            stmt = (e.get("statement") or "").strip()[:220]
+            note = (e.get("note") or "").strip()
+            out.append(f"  • {stmt}" + (f" — эксперт: {note}" if note else ""))
+        return out
+
+    parts = ["ОБРАТНАЯ СВЯЗЬ ЭКСПЕРТА ПО ПРЕДЫДУЩИМ ГИПОТЕЗАМ (учитывай обязательно):"]
+    if confirmed:
+        parts.append("ПОДТВЕРЖДЕНЫ экспертом — развивай и усиливай эти направления, предлагай их вариации и следующие шаги:")
+        parts += _lines(confirmed, 8)
+    if refuted:
+        parts.append("ОПРОВЕРГНУТЫ/ОТКЛОНЕНЫ экспертом — НЕ повторяй эти идеи; если предлагаешь близкое, устрани указанную причину:")
+        parts += _lines(refuted, 8)
+    if reviewed:
+        parts.append("НА ПРОВЕРКЕ / с замечаниями эксперта — учти замечания:")
+        parts += _lines(reviewed, 6)
+    return "\n".join(parts) + "\n\n"
+
+
+def build_generation_prompt(project, items, n: int, topic: str = None, feedback=None):
+    """project: Project; items: rag-пассажи; n: сколько гипотез; topic: тема (опц.);
+    feedback: экспертная обратная связь по прошлым гипотезам (обучение на фидбэке)."""
     direction = "увеличить" if (project.kpi_direction or "increase") == "increase" else "снизить"
     kb_block, id_map = _format_context(items)
     focus = f"\nТЕМА/ФОКУС ЗАПРОСА: {topic}\n" if (topic or "").strip() else ""
+    feedback_block = _format_feedback(feedback)
+    feedback_rule = (
+        "\n  • ОБЯЗАТЕЛЬНО учитывай обратную связь эксперта выше: развивай подтверждённые "
+        "направления, не повторяй отклонённые, закрывай замечания;"
+        if feedback_block else ""
+    )
 
     user = f"""ЦЕЛЬ И КОНТЕКСТ ПРОЕКТА
 Проект: {project.title}
@@ -73,7 +116,7 @@ def build_generation_prompt(project, items, n: int, topic: str = None):
 БАЗА ЗНАНИЙ (RAG: TF-IDF отбор → переранжирование кросс-энкодером)
 {kb_block}
 
-ЗАДАЧА
+{feedback_block}ЗАДАЧА
 Сгенерируй {n} РАЗНООБРАЗНЫХ, взаимодополняющих и проверяемых научных гипотез для достижения цели.
 Требования:
   • опирайся на конкретные источники и ссылайся на них по ID ([S1], [S2] ...);
@@ -81,7 +124,7 @@ def build_generation_prompt(project, items, n: int, topic: str = None):
   • обязательно заполни goal_link — прямую связь с целью/метрикой проекта;
   • формулировка должна быть проверяемой в эксперименте;
   • оценки калибруй честно и обосновывай каждую;
-  • если источников недостаточно — снижай feasibility и повышай risk.
+  • если источников недостаточно — снижай feasibility и повышай risk;{feedback_rule}
 {_SCORE_GUIDE}
 """
     return SYSTEM_PROMPT, user, id_map

@@ -33,6 +33,26 @@ def _normalize_weights(w) -> dict:
     return {k: round(v / s, 3) for k, v in w.items()}
 
 
+def _collect_feedback(project) -> dict:
+    """Экспертная обратная связь по ранее сгенерированным гипотезам проекта.
+
+    Механизм обучения на фидбэке: подтверждённые (accepted) и опровергнутые (rejected)
+    гипотезы + заметки эксперта передаются в промпт следующей генерации, чтобы модель
+    развивала подтверждённое и не повторяла отклонённое.
+    """
+    confirmed, refuted, reviewed = [], [], []
+    for h in project.hypotheses.order_by(Hypothesis.created_at.desc()).all():
+        note = (h.expert_notes or "").strip()
+        entry = {"statement": h.statement, "note": note}
+        if h.status == "accepted":
+            confirmed.append(entry)
+        elif h.status == "rejected":
+            refuted.append(entry)
+        elif h.status == "review" or note:
+            reviewed.append(entry)
+    return {"confirmed": confirmed, "refuted": refuted, "reviewed": reviewed}
+
+
 def _build_query(project: Project, topic: str = None) -> str:
     if (topic or "").strip():
         # тема — главный фокус, цель добавляем как контекст
@@ -101,8 +121,9 @@ def generate_hypotheses(project_id: int, n: int = 5, top_k: int = 6, weights: di
         "lang": it.get("lang"),
     } for it in items]
 
-    # ── 2. Промпт ────────────────────────────────────────────────────────────
-    system, user, id_map = build_generation_prompt(project, items, n, topic=topic)
+    # ── 2. Промпт (+ обратная связь эксперта: обучение на фидбэке) ────────────
+    feedback = _collect_feedback(project)
+    system, user, id_map = build_generation_prompt(project, items, n, topic=topic, feedback=feedback)
 
     run = GenerationRun(
         project_id=project.id, model=None, weights=weights,
