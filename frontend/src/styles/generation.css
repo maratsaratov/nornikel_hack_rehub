@@ -256,6 +256,70 @@
   color: #9aa0aa;
 }
 
+.export-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.export-menu > .text-btn {
+  gap: 5px;
+}
+
+.export-menu > .text-btn svg:last-child {
+  width: 13px;
+  height: 13px;
+  transition: transform 0.15s ease;
+}
+
+.export-menu--open > .text-btn svg:last-child {
+  transform: rotate(180deg);
+}
+
+.export-menu__pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 196px;
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(20, 36, 58, 0.14);
+}
+
+.export-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  transition: background 0.14s ease;
+}
+
+.export-menu__item:hover {
+  background: var(--blue-soft);
+}
+
+.export-menu__fmt {
+  color: #17191f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.export-menu__hint {
+  color: #9aa0aa;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .gen-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

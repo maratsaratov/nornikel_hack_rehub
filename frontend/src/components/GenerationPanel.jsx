@@ -1,8 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
 import { rankHypotheses } from '../scoring.js'
 import { Modal } from './ui.jsx'
 import HypothesisRoadmapModal from './HypothesisRoadmapModal.jsx'
+
+const EXPORT_FORMATS = [
+  { key: 'pdf', label: 'PDF', hint: 'Бизнес-отчёт' },
+  { key: 'docx', label: 'DOCX', hint: 'Бизнес-отчёт' },
+  { key: 'csv', label: 'CSV', hint: 'Формат задач' },
+  { key: 'json', label: 'JSON', hint: 'Формат задач' },
+]
 
 const SCORE_ITEMS = [
   { key: 'novelty', label: 'Новизна' },
@@ -38,6 +45,8 @@ function Icon({ name }) {
   if (name === 'folder') return <svg {...common}><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
   if (name === 'route') return <svg {...common}><circle cx="6" cy="18" r="3" /><circle cx="18" cy="6" r="3" /><path d="M9 18h1a4 4 0 0 0 4-4v-4a4 4 0 0 1 4-4" /></svg>
   if (name === 'edit') return <svg {...common}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>
+  if (name === 'download') return <svg {...common}><path d="M12 3v12" /><path d="m7 11 5 5 5-5" /><path d="M5 21h14" /></svg>
+  if (name === 'chevron') return <svg {...common}><path d="m6 9 6 6 6-6" /></svg>
   return null
 }
 
@@ -140,6 +149,40 @@ export default function GenerationPanel({ project, flash }) {
     }
   }
 
+  const exportProject = async (format) => {
+    if (!project) return
+    try {
+      const apiWeights = {
+        novelty: weights.novelty / 100,
+        value: weights.value / 100,
+        feasibility: weights.feasibility / 100,
+        risk: weights.risk / 100,
+      }
+      const url = `/api/projects/${project.id}/hypotheses/export?format=${format}`
+        + `&weights=${encodeURIComponent(JSON.stringify(apiWeights))}`
+      const res = await fetch(url)
+      if (!res.ok) {
+        let msg = `Ошибка ${res.status}`
+        try { const e = await res.json(); msg = e.error || msg } catch (_) { /* ignore */ }
+        throw new Error(msg)
+      }
+      const blob = await res.blob()
+      const cd = res.headers.get('Content-Disposition') || ''
+      const match = cd.match(/filename="?([^"]+)"?/)
+      const filename = match ? match[1] : `project_${project.id}_hypotheses.${format}`
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(link.href)
+      flash(`Экспорт (${format.toUpperCase()}) готов`, 'ok')
+    } catch (error) {
+      flash(error.message, 'err')
+    }
+  }
+
   const updateWeight = (key, val) => setWeights((prev) => ({ ...prev, [key]: Number(val) }))
   const rangeStyle = (value, min, max) => ({
     '--range-value': `${((Number(value) - min) / (max - min)) * 100}%`,
@@ -225,6 +268,7 @@ export default function GenerationPanel({ project, flash }) {
           <h2>Результаты анализа</h2>
           <span className="badge">Найдено {rankedHypotheses.length} релевантных решений</span>
           <div className="spacer" />
+          <ExportMenu onExport={exportProject} disabled={rankedHypotheses.length === 0} />
           <button className="text-btn" type="button" onClick={openComparisonPlaceholder}><Icon name="chart" /> Сравнение</button>
           <button className="text-btn text-muted" type="button" onClick={clearResults}><Icon name="trash" /> Очистить</button>
         </div>
@@ -409,6 +453,52 @@ export default function GenerationPanel({ project, flash }) {
           retrieved={latestRun?.retrieved || []}
           onClose={() => setRoadmapHypothesisId(null)}
         />
+      )}
+    </div>
+  )
+}
+
+function ExportMenu({ onExport, disabled }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onDocClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const pick = (format) => {
+    setOpen(false)
+    onExport(format)
+  }
+
+  return (
+    <div className={`export-menu ${open ? 'export-menu--open' : ''}`} ref={ref}>
+      <button className="text-btn" type="button" disabled={disabled} onClick={() => setOpen((v) => !v)}>
+        <Icon name="download" /> Экспорт <Icon name="chevron" />
+      </button>
+      {open && (
+        <div className="export-menu__pop" role="menu">
+          {EXPORT_FORMATS.map((format) => (
+            <button
+              key={format.key}
+              type="button"
+              className="export-menu__item"
+              role="menuitem"
+              onClick={() => pick(format.key)}
+            >
+              <span className="export-menu__fmt">{format.label}</span>
+              <span className="export-menu__hint">{format.hint}</span>
+            </button>
+          ))}
+        </div>
       )}
     </div>
   )

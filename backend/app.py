@@ -734,25 +734,39 @@ def export_hypotheses(
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
-    fmt = (format or "md").lower()
+    fmt = (format or "pdf").lower()
     parsed_weights = _parse_weights(weights) or DEFAULT_WEIGHTS
     hyps = [h.to_dict(parsed_weights) for h in p.hypotheses.all()]
     hyps.sort(key=lambda x: x["composite"], reverse=True)
     project = p.to_dict()
 
-    if fmt == "json":
-        return {"project": project, "weights": parsed_weights, "hypotheses": hyps}
-    if fmt == "csv":
+    def _file(content, media_type, ext):
         return Response(
-            content=export.to_csv(hyps),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.csv"},
+            content=content, media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="project_{pid}_hypotheses.{ext}"'},
         )
-    return Response(
-        content=export.to_markdown(project, hyps, parsed_weights),
-        media_type="text/markdown",
-        headers={"Content-Disposition": f"attachment; filename=hypotheses_{pid}.md"},
-    )
+
+    if fmt == "json":
+        return _file(export.to_json(project, hyps, parsed_weights), "application/json", "json")
+    if fmt == "csv":
+        return _file(export.to_csv(hyps), "text/csv", "csv")
+    if fmt == "md":
+        return _file(export.to_markdown(project, hyps, parsed_weights), "text/markdown", "md")
+    if fmt == "docx":
+        try:
+            data = export.to_docx(project, hyps, parsed_weights)
+        except Exception as e:  # noqa
+            return JSONResponse({"error": f"Не удалось сформировать DOCX: {e}"}, status_code=500)
+        return _file(data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx")
+    if fmt == "pdf":
+        try:
+            data = export.to_pdf(project, hyps, parsed_weights)
+        except export.ExportError as e:
+            return JSONResponse({"error": str(e)}, status_code=501)
+        except Exception as e:  # noqa
+            return JSONResponse({"error": f"Не удалось сформировать PDF: {e}"}, status_code=500)
+        return _file(data, "application/pdf", "pdf")
+    return JSONResponse({"error": f"Неизвестный формат: {fmt}"}, status_code=400)
 
 
 @app.patch("/api/hypotheses/{hid}")
