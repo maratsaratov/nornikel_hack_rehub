@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
+import { projectStorageKey, readStorage, writeStorage } from '../storage.js'
 import { Modal } from './ui.jsx'
 
 const TYPE_META = {
@@ -19,8 +20,21 @@ const YEAR_META = {
 const ACCEPTED_DOCUMENT_EXTENSIONS = ['pdf', 'docx', 'xlsx', 'csv', 'txt']
 const MAX_DOCUMENT_UPLOAD_MB = 25
 const EMPTY_OPENALEX_RESULTS = { query: '', local: [], external: [], external_error: null }
+const KNOWLEDGE_STATE_STORAGE_SCOPE = 'knowledge-state'
 const MIN_OPENALEX_QUERY_LENGTH = 2
 const OPENALEX_SEARCH_DEBOUNCE_MS = 320
+const DEFAULT_TYPE_FILTERS = {
+  article: true,
+  literature: true,
+  patent: false,
+  technical: false,
+}
+const DEFAULT_YEAR_FILTERS = {
+  2026: true,
+  2025: true,
+  2024: true,
+  earlier: true,
+}
 const STOP_WORDS = new Set([
   'and', 'are', 'but', 'for', 'from', 'into', 'not', 'that', 'the', 'their', 'this', 'with',
   'это', 'как', 'для', 'или', 'при', 'под', 'над', 'без', 'что', 'его', 'ее', 'её', 'они',
@@ -376,6 +390,50 @@ function buildOpenAlexResults(query, payload = {}) {
     query: payload?.query || query,
     local: payload?.local || [],
     external: payload?.external || [],
+  }
+}
+
+function normalizeFilterState(value, defaults) {
+  const next = { ...defaults }
+  if (!value || typeof value !== 'object') return next
+
+  Object.keys(defaults).forEach((key) => {
+    if (typeof value[key] === 'boolean') {
+      next[key] = value[key]
+    }
+  })
+
+  return next
+}
+
+function normalizeSelectedIds(value) {
+  if (!Array.isArray(value)) return new Set()
+
+  return new Set(
+    value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  )
+}
+
+function readKnowledgeState(projectId) {
+  const stored = readStorage(projectStorageKey(KNOWLEDGE_STATE_STORAGE_SCOPE, projectId), null)
+  if (!stored || typeof stored !== 'object') {
+    return {
+      query: '',
+      typeFilters: { ...DEFAULT_TYPE_FILTERS },
+      yearFilters: { ...DEFAULT_YEAR_FILTERS },
+      selectedIds: new Set(),
+      hasSelectionState: false,
+    }
+  }
+
+  return {
+    query: typeof stored.query === 'string' ? stored.query : '',
+    typeFilters: normalizeFilterState(stored.typeFilters, DEFAULT_TYPE_FILTERS),
+    yearFilters: normalizeFilterState(stored.yearFilters, DEFAULT_YEAR_FILTERS),
+    selectedIds: normalizeSelectedIds(stored.selectedIds),
+    hasSelectionState: Array.isArray(stored.selectedIds),
   }
 }
 
@@ -789,7 +847,10 @@ export default function KnowledgePanel({
   onUploadDocument,
   onDeleteDocument,
 }) {
-  const [query, setQuery] = useState('')
+  const storageKey = projectStorageKey(KNOWLEDGE_STATE_STORAGE_SCOPE, project?.id)
+  const initialState = readKnowledgeState(project?.id)
+
+  const [query, setQuery] = useState(initialState.query)
   const [doi, setDoi] = useState('')
   const [doiStatus, setDoiStatus] = useState('')
   const [openAlexResults, setOpenAlexResults] = useState(EMPTY_OPENALEX_RESULTS)
@@ -797,27 +858,18 @@ export default function KnowledgePanel({
   const [importingOpenAlexKey, setImportingOpenAlexKey] = useState('')
   const [uploadStatus, setUploadStatus] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [selectedIds, setSelectedIds] = useState(initialState.selectedIds)
   const [openedSourceItem, setOpenedSourceItem] = useState(null)
   const [openedSource, setOpenedSource] = useState(null)
   const [openingSource, setOpeningSource] = useState(false)
   const [openedSourceError, setOpenedSourceError] = useState('')
   const [hypotheses, setHypotheses] = useState([])
   const [runs, setRuns] = useState([])
-  const [typeFilters, setTypeFilters] = useState({
-    article: true,
-    literature: true,
-    patent: false,
-    technical: false,
-  })
-  const [yearFilters, setYearFilters] = useState({
-    2026: true,
-    2025: true,
-    2024: true,
-    earlier: true,
-  })
+  const [typeFilters, setTypeFilters] = useState(initialState.typeFilters)
+  const [yearFilters, setYearFilters] = useState(initialState.yearFilters)
+  const [activeStorageKey, setActiveStorageKey] = useState(storageKey)
   const fileInputRef = useRef(null)
-  const selectedOnceRef = useRef(false)
+  const selectedOnceRef = useRef(initialState.hasSelectionState)
   const openAlexRequestRef = useRef(0)
   const hypothesesRequestRef = useRef(0)
   const runsRequestRef = useRef(0)
@@ -858,6 +910,47 @@ export default function KnowledgePanel({
 
     return counts
   }, [libraryItems])
+
+  useEffect(() => {
+    const state = readKnowledgeState(project?.id)
+    setQuery(state.query)
+    setTypeFilters(state.typeFilters)
+    setYearFilters(state.yearFilters)
+    setSelectedIds(state.selectedIds)
+    selectedOnceRef.current = state.hasSelectionState
+    setActiveStorageKey(storageKey)
+  }, [project?.id, storageKey])
+
+  useEffect(() => {
+    if (!storageKey || activeStorageKey !== storageKey) return
+
+    writeStorage(storageKey, {
+      query,
+      typeFilters,
+      yearFilters,
+      selectedIds: Array.from(selectedIds),
+    })
+  }, [activeStorageKey, query, selectedIds, storageKey, typeFilters, yearFilters])
+
+  useEffect(() => {
+    if (libraryItems.length === 0 || selectedIds.size === 0) return
+
+    setSelectedIds((prev) => {
+      const availableIds = new Set(libraryItems.map((item) => item.id))
+      let changed = false
+      const next = new Set()
+
+      prev.forEach((itemId) => {
+        if (availableIds.has(itemId)) {
+          next.add(itemId)
+        } else {
+          changed = true
+        }
+      })
+
+      return changed ? next : prev
+    })
+  }, [libraryItems, selectedIds.size])
 
   useEffect(() => {
     if (selectedOnceRef.current || libraryItems.length === 0) return

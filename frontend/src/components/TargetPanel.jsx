@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
+import { projectStorageKey, readStorage, writeStorage } from '../storage.js'
 
 const DEFAULT_METRICS = [
   {
@@ -19,6 +20,8 @@ const DEFAULT_METRICS = [
 
 const DEFAULT_TAGS = ['Эффективность', 'Q4_2024', 'Логистика', 'Затраты']
 const DEFAULT_CONSTRAINTS = ['Лом стальной 3А', 'Чугун ПЛ-1', 'Феррохром ФХ010', 'Бюджет 15млн ₽', 'Печь ДСП-25', 'ГОСТ 5632-2014']
+const TARGET_DRAFT_STORAGE_SCOPE = 'target-draft'
+const TARGET_ACTIONS = new Set(['decrease', 'increase', 'optimize'])
 
 function Icon({ name }) {
   const common = {
@@ -94,6 +97,66 @@ function projectMetrics(project) {
   }]
 }
 
+function normalizeAction(value) {
+  return TARGET_ACTIONS.has(value) ? value : 'optimize'
+}
+
+function normalizeMetric(metric, index) {
+  if (!metric || typeof metric !== 'object') return null
+  return {
+    id: String(metric.id || `metric-${index}`),
+    name: String(metric.name || ''),
+    unit: String(metric.unit || ''),
+    current: String(metric.current || ''),
+    target: String(metric.target || ''),
+  }
+}
+
+function normalizeMetrics(value, fallback) {
+  if (!Array.isArray(value)) return fallback
+
+  const normalized = value
+    .map(normalizeMetric)
+    .filter(Boolean)
+
+  return normalized.length > 0 ? normalized : fallback
+}
+
+function normalizeStringList(value, fallback) {
+  if (!Array.isArray(value)) return fallback
+
+  const normalized = value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+
+  return normalized.length > 0 ? normalized : fallback
+}
+
+function buildTargetDraft(project) {
+  return {
+    goal: project?.kpi_target || '',
+    action: normalizeAction(project?.kpi_direction || 'optimize'),
+    metrics: projectMetrics(project),
+    tags: splitTokens(project?.domain, DEFAULT_TAGS),
+    constraints: splitTokens(project?.constraints, DEFAULT_CONSTRAINTS),
+  }
+}
+
+function readTargetDraft(project) {
+  const defaults = buildTargetDraft(project)
+  const stored = readStorage(projectStorageKey(TARGET_DRAFT_STORAGE_SCOPE, project?.id), null)
+  if (!stored || typeof stored !== 'object') return defaults
+
+  return {
+    ...defaults,
+    goal: typeof stored.goal === 'string' ? stored.goal : defaults.goal,
+    action: normalizeAction(stored.action || defaults.action),
+    metrics: normalizeMetrics(stored.metrics, defaults.metrics),
+    tags: normalizeStringList(stored.tags, defaults.tags),
+    constraints: normalizeStringList(stored.constraints, defaults.constraints),
+  }
+}
+
 function formatSavedDate(value) {
   const date = value ? new Date(value) : new Date()
   if (Number.isNaN(date.getTime())) return ''
@@ -108,29 +171,44 @@ function formatSavedDate(value) {
 }
 
 export default function TargetPanel({ project, onSave }) {
-  const initialTags = useMemo(() => splitTokens(project?.domain, DEFAULT_TAGS), [project])
-  const initialConstraints = useMemo(() => splitTokens(project?.constraints, DEFAULT_CONSTRAINTS), [project])
+  const storageKey = projectStorageKey(TARGET_DRAFT_STORAGE_SCOPE, project?.id)
+  const initialDraft = readTargetDraft(project)
 
-  const [goal, setGoal] = useState(project?.kpi_target || '')
-  const [action, setAction] = useState(project?.kpi_direction === 'decrease' ? 'decrease' : 'optimize')
-  const [metrics, setMetrics] = useState(() => projectMetrics(project))
-  const [tags, setTags] = useState(initialTags)
+  const [goal, setGoal] = useState(initialDraft.goal)
+  const [action, setAction] = useState(initialDraft.action)
+  const [metrics, setMetrics] = useState(initialDraft.metrics)
+  const [tags, setTags] = useState(initialDraft.tags)
   const [tagDraft, setTagDraft] = useState('')
-  const [constraints, setConstraints] = useState(initialConstraints)
+  const [constraints, setConstraints] = useState(initialDraft.constraints)
   const [constraintDraft, setConstraintDraft] = useState('')
   const [saving, setSaving] = useState(false)
   const [lastSaved, setLastSaved] = useState(() => formatSavedDate(project?.created_at))
+  const [activeStorageKey, setActiveStorageKey] = useState(storageKey)
 
   useEffect(() => {
-    setGoal(project?.kpi_target || '')
-    setAction(project?.kpi_direction === 'decrease' ? 'decrease' : 'optimize')
-    setMetrics(projectMetrics(project))
-    setTags(splitTokens(project?.domain, DEFAULT_TAGS))
-    setConstraints(splitTokens(project?.constraints, DEFAULT_CONSTRAINTS))
+    const draft = readTargetDraft(project)
+    setGoal(draft.goal)
+    setAction(draft.action)
+    setMetrics(draft.metrics)
+    setTags(draft.tags)
+    setConstraints(draft.constraints)
     setLastSaved(formatSavedDate(project?.created_at))
     setTagDraft('')
     setConstraintDraft('')
-  }, [project])
+    setActiveStorageKey(storageKey)
+  }, [project, storageKey])
+
+  useEffect(() => {
+    if (!storageKey || activeStorageKey !== storageKey) return
+
+    writeStorage(storageKey, {
+      goal,
+      action,
+      metrics,
+      tags,
+      constraints,
+    })
+  }, [action, activeStorageKey, constraints, goal, metrics, storageKey, tags])
 
   const updateMetric = (id, field, value) => {
     setMetrics((prev) => prev.map((metric) => (

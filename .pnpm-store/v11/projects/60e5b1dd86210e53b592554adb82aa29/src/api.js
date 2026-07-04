@@ -32,9 +32,11 @@ export const api = {
     req(`/api/projects/${id}/sources/search?q=${encodeURIComponent(q)}&limit=${limit}`)
   ),
   importOpenAlex: (id, b) => req(`/api/projects/${id}/sources/import-openalex`, { method: 'POST', ...body(b) }),
+  getSource: (id) => req(`/api/sources/${id}`),
   deleteSource: (id) => req(`/api/sources/${id}`, { method: 'DELETE' }),
 
   listDocuments: (id) => req(`/api/projects/${id}/documents`),
+  getDocument: (id, raw = false) => req(`/api/documents/${id}?raw=${raw ? 'true' : 'false'}`),
   uploadDocument: (id, file, parse = true) => {
     const form = new FormData()
     form.append('file', file)

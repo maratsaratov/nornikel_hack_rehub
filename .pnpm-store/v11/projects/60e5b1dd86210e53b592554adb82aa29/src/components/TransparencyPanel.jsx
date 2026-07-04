@@ -25,11 +25,20 @@ export default function TransparencyPanel({ run }) {
           <div>
             <h4>Отобранные источники ({retrieved.length})</h4>
             {retrieved.length === 0 && <p className="section-hint">Во время запуска не было найдено релевантных документов.</p>}
-            {retrieved.map((r) => (
-              <div className="retr-item" key={r.source_id}>
+            {retrieved.map((r, index) => (
+              <div className="retr-item" key={r.source_key || `${r.source_kind || 'source'}-${r.source_id || index}`}>
                 <span className="retr-score">{(r.score ?? 0).toFixed(3)}</span>
                 <div className="retr-main">
                   <div className="retr-title" title={r.title}>{r.title}</div>
+                  {(r.source_kind === 'document' || r.section_title || r.page_ref) && (
+                    <div className="retr-title">
+                      {[
+                        r.source_kind === 'document' ? 'Документ' : '',
+                        r.section_title || '',
+                        r.page_ref ? `Лист/стр. ${r.page_ref}` : '',
+                      ].filter(Boolean).join(' · ')}
+                    </div>
+                  )}
                   {r.terms && r.terms.length > 0 && (
                     <div className="retr-terms">
                       {r.terms.map((term, index) => <span key={index}>{term}</span>)}
