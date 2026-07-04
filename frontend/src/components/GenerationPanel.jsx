@@ -10,6 +10,13 @@ const SCORE_ITEMS = [
   { key: 'risk', label: 'Риск' },
 ]
 
+const VERDICTS = [
+  { key: 'proposed', label: 'Новая' },
+  { key: 'review', label: 'На проверке' },
+  { key: 'accepted', label: 'Подтверждена' },
+  { key: 'rejected', label: 'Опровергнута' },
+]
+
 function Icon({ name }) {
   const common = {
     width: 16,
@@ -108,6 +115,15 @@ export default function GenerationPanel({ project, flash }) {
       flash(error.message, 'err')
     } finally {
       setGenerating(false)
+    }
+  }
+
+  const updateHypothesis = async (id, patch) => {
+    try {
+      const updated = await api.updateHypothesis(id, patch)
+      setRawHypotheses((prev) => prev.map((item) => (item.id === id ? updated : item)))
+    } catch (error) {
+      flash(error.message, 'err')
     }
   }
 
@@ -359,10 +375,94 @@ export default function GenerationPanel({ project, flash }) {
                 </div>
               </section>
             )}
+
+            <ExpertFeedback
+              key={openedHypothesis.id}
+              hypothesis={openedHypothesis}
+              onUpdate={updateHypothesis}
+            />
           </div>
         </Modal>
       )}
     </div>
+  )
+}
+
+function ExpertFeedback({ hypothesis, onUpdate }) {
+  const [notes, setNotes] = useState(hypothesis.expert_notes || '')
+
+  const setStatus = (status) => onUpdate(hypothesis.id, { status })
+  const saveNotes = () => {
+    if (notes !== (hypothesis.expert_notes || '')) onUpdate(hypothesis.id, { expert_notes: notes })
+  }
+  const overrideScore = (key, raw) => {
+    const value = raw === '' ? null : Math.max(0, Math.min(100, Number(raw)))
+    onUpdate(hypothesis.id, { expert_scores: { [key]: value } })
+  }
+  const resetScores = () => onUpdate(hypothesis.id, {
+    expert_scores: { novelty: null, value: null, feasibility: null, risk: null },
+  })
+  const hasOverrides = hypothesis.expert_scores
+    && Object.values(hypothesis.expert_scores).some((v) => v != null)
+
+  return (
+    <section className="hypothesis-modal__section expert-review">
+      <h4>Экспертная оценка</h4>
+      <p className="expert-review__hint">
+        Вердикт и отзыв учитываются моделью при следующей генерации гипотез в этом проекте (обучение на фидбэке).
+      </p>
+
+      <div className="expert-review__verdicts">
+        {VERDICTS.map((verdict) => (
+          <button
+            key={verdict.key}
+            type="button"
+            data-verdict={verdict.key}
+            className={hypothesis.status === verdict.key ? 'is-active' : ''}
+            onClick={() => setStatus(verdict.key)}
+          >
+            {verdict.label}
+          </button>
+        ))}
+      </div>
+
+      <label className="expert-review__label" htmlFor={`expert-notes-${hypothesis.id}`}>Отзыв эксперта</label>
+      <textarea
+        id={`expert-notes-${hypothesis.id}`}
+        className="expert-review__notes"
+        rows={3}
+        placeholder="Почему подтверждена или опровергнута, замечания и что учесть в следующих гипотезах…"
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        onBlur={saveNotes}
+      />
+
+      <div className="expert-review__weights-head">
+        <span className="expert-review__label">Экспертные оценки (0–100)</span>
+        {hasOverrides && (
+          <button type="button" className="expert-review__reset" onClick={resetScores}>Сбросить</button>
+        )}
+      </div>
+      <div className="expert-review__weights">
+        {SCORE_ITEMS.map((item) => (
+          <label className="expert-review__weight" key={item.key}>
+            <span>{item.label}</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              defaultValue={hypothesis.expert_scores?.[item.key] ?? ''}
+              placeholder={String(Math.round(hypothesis.scores?.[item.key] ?? 0))}
+              onBlur={(e) => {
+                const current = hypothesis.expert_scores?.[item.key] != null
+                  ? String(hypothesis.expert_scores[item.key]) : ''
+                if (e.target.value !== current) overrideScore(item.key, e.target.value)
+              }}
+            />
+          </label>
+        ))}
+      </div>
+    </section>
   )
 }
 
