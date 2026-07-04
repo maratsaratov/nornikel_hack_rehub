@@ -3,7 +3,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI, File, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import inspect, or_, text
@@ -12,6 +12,8 @@ from config import Config
 from db import db
 from models import (
     Project,
+    ProjectMembership,
+    ROLE_OWNER,
     KnowledgeSource,
     Hypothesis,
     GenerationRun,
@@ -19,6 +21,16 @@ from models import (
     DocumentChunk,
     DocumentTable,
     DEFAULT_WEIGHTS,
+)
+from auth import (
+    add_project_member,
+    login_user,
+    logout_user,
+    register_user,
+    remove_project_member,
+    require_project_access,
+    require_project_owner,
+    require_user,
 )
 from engine import generate_hypotheses, suggest_weights
 import llm
@@ -151,6 +163,42 @@ def _query_int(value, default, minimum=None, maximum=None):
     return parsed
 
 
+def current_user_dependency(request: Request):
+    return require_user(request)
+
+
+def _require_source_access(user, source_id: int):
+    source = db.session.get(KnowledgeSource, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    require_project_access(user, source.project_id)
+    return source
+
+
+def _require_document_access(user, document_id: int):
+    document = db.session.get(SourceDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    require_project_access(user, document.project_id)
+    return document
+
+
+def _require_hypothesis_access(user, hypothesis_id: int):
+    hypothesis = db.session.get(Hypothesis, hypothesis_id)
+    if not hypothesis:
+        raise HTTPException(status_code=404, detail="Hypothesis not found")
+    require_project_access(user, hypothesis.project_id)
+    return hypothesis
+
+
+def _require_run_access(user, run_id: int):
+    run = db.session.get(GenerationRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    require_project_access(user, run.project_id)
+    return run
+
+
 def _acquire_knowledge(project, topic, sources=None, limit=None, dry_run=False, max_import=12):
     """«Умный парсер»: найти по теме внешние научные источники и импортировать в базу."""
     found = connectors.search_all(topic, sources=sources, per_source_limit=limit)
@@ -206,6 +254,7 @@ def _acquire_knowledge(project, topic, sources=None, limit=None, dry_run=False, 
 def _ensure_columns():
     """Лёгкие миграции: добавить недостающие колонки в существующие таблицы."""
     wanted = {
+        "projects": {"created_by_id": "INTEGER"},
         "knowledge_sources": {"origin": "VARCHAR(40)"},
         "hypotheses": {"goal_link": "TEXT"},
         "generation_runs": {
@@ -342,17 +391,43 @@ def get_config():
 
 
 # ── Projects ────────────────────────────────────────────────────────────
+@app.post("/api/auth/register", status_code=201)
+def auth_register(d: dict = Body(default={})):
+    return register_user(d)
+
+
+@app.post("/api/auth/login")
+def auth_login(d: dict = Body(default={})):
+    return login_user(d)
+
+
+@app.get("/api/auth/me")
+def auth_me(user=Depends(current_user_dependency)):
+    return user.to_dict()
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    return logout_user(request)
+
+
 @app.get("/api/projects")
-def list_projects():
-    rows = Project.query.order_by(Project.created_at.desc()).all()
-    return [p.to_dict() for p in rows]
+def list_projects(user=Depends(current_user_dependency)):
+    memberships = (
+        ProjectMembership.query.filter_by(user_id=user.id)
+        .join(Project)
+        .order_by(Project.created_at.desc())
+        .all()
+    )
+    return [m.project.to_dict(m.role) for m in memberships if m.project]
 
 
 @app.post("/api/projects", status_code=201)
-def create_project(d: dict = Body(default={})):
+def create_project(d: dict = Body(default={}), user=Depends(current_user_dependency)):
     if not (d.get("title") and d.get("kpi_target")):
         return JSONResponse({"error": "Поля title и kpi_target обязательны"}, status_code=400)
     p = Project(
+        created_by_id=user.id,
         title=d["title"].strip(),
         kpi_target=d["kpi_target"].strip(),
         kpi_metric=d.get("kpi_metric"),
@@ -361,43 +436,61 @@ def create_project(d: dict = Body(default={})):
         constraints=d.get("constraints"),
     )
     db.session.add(p)
+    db.session.flush()
+    db.session.add(ProjectMembership(project_id=p.id, user_id=user.id, role=ROLE_OWNER))
     db.session.commit()
-    return p.to_dict()
+    return p.to_dict(ROLE_OWNER)
 
 
 @app.get("/api/projects/{pid}")
-def get_project(pid: int):
-    p = db.session.get(Project, pid)
-    if not p:
-        return JSONResponse({"error": "Проект не найден"}, status_code=404)
-    return p.to_dict()
+def get_project(pid: int, user=Depends(current_user_dependency)):
+    p, membership = require_project_access(user, pid)
+    return p.to_dict(membership.role)
 
 
 @app.put("/api/projects/{pid}")
-def update_project(pid: int, d: dict = Body(default={})):
-    p = db.session.get(Project, pid)
-    if not p:
-        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+def update_project(pid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    p, membership = require_project_owner(user, pid)
     for f in ("title", "kpi_target", "kpi_metric", "kpi_direction", "domain", "constraints"):
         if f in d:
             setattr(p, f, d[f])
     db.session.commit()
-    return p.to_dict()
+    return p.to_dict(membership.role)
 
 
 @app.delete("/api/projects/{pid}")
-def delete_project(pid: int):
-    p = db.session.get(Project, pid)
-    if not p:
-        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+def delete_project(pid: int, user=Depends(current_user_dependency)):
+    p, _membership = require_project_owner(user, pid)
     db.session.delete(p)
     db.session.commit()
     return {"deleted": pid}
 
 
+@app.get("/api/projects/{pid}/members")
+def list_project_members(pid: int, user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
+    rows = p.memberships.all()
+    rows.sort(key=lambda m: (m.role != ROLE_OWNER, m.user.username if m.user else ""))
+    return [m.to_dict() for m in rows]
+
+
+@app.post("/api/projects/{pid}/members", status_code=201)
+def invite_project_member(pid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    p, _membership = require_project_owner(user, pid)
+    membership = add_project_member(p, d.get("username"))
+    return membership.to_dict()
+
+
+@app.delete("/api/projects/{pid}/members/{user_id}")
+def delete_project_member(pid: int, user_id: int, user=Depends(current_user_dependency)):
+    p, _membership = require_project_owner(user, pid)
+    return remove_project_member(p, user_id)
+
+
 # ── Knowledge sources ───────────────────────────────────────────────────
 @app.get("/api/projects/{pid}/sources")
-def list_sources(pid: int):
+def list_sources(pid: int, user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -411,7 +504,9 @@ def search_sources(
     q: str = Query(""),
     limit: int | None = Query(None),
     source: list[str] = Query(default=[]),
+    user=Depends(current_user_dependency),
 ):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -459,7 +554,8 @@ def search_sources(
 
 
 @app.post("/api/projects/{pid}/sources", status_code=201)
-def add_source(pid: int, d: dict = Body(default={})):
+def add_source(pid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -481,7 +577,8 @@ def add_source(pid: int, d: dict = Body(default={})):
 
 
 @app.post("/api/projects/{pid}/sources/import-openalex")
-def import_openalex_source(pid: int, d: dict = Body(default={})):
+def import_openalex_source(pid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -519,7 +616,8 @@ def import_openalex_source(pid: int, d: dict = Body(default={})):
 
 
 @app.get("/api/sources/{sid}")
-def get_source(sid: int):
+def get_source(sid: int, user=Depends(current_user_dependency)):
+    _require_source_access(user, sid)
     s = db.session.get(KnowledgeSource, sid)
     if not s:
         return JSONResponse({"error": "Источник не найден"}, status_code=404)
@@ -527,7 +625,8 @@ def get_source(sid: int):
 
 
 @app.post("/api/projects/{pid}/knowledge/acquire")
-def acquire_knowledge(pid: int, d: dict = Body(default={})):
+def acquire_knowledge(pid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -548,7 +647,8 @@ def acquire_knowledge(pid: int, d: dict = Body(default={})):
 
 
 @app.post("/api/projects/{pid}/weights/suggest")
-def weights_suggest(pid: int):
+def weights_suggest(pid: int, user=Depends(current_user_dependency)):
+    require_project_access(user, pid)
     try:
         return suggest_weights(pid)
     except ValueError as e:
@@ -558,7 +658,8 @@ def weights_suggest(pid: int):
 
 
 @app.put("/api/sources/{sid}")
-def update_source(sid: int, d: dict = Body(default={})):
+def update_source(sid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    _require_source_access(user, sid)
     s = db.session.get(KnowledgeSource, sid)
     if not s:
         return JSONResponse({"error": "Источник не найден"}, status_code=404)
@@ -570,7 +671,8 @@ def update_source(sid: int, d: dict = Body(default={})):
 
 
 @app.delete("/api/sources/{sid}")
-def delete_source(sid: int):
+def delete_source(sid: int, user=Depends(current_user_dependency)):
+    _require_source_access(user, sid)
     s = db.session.get(KnowledgeSource, sid)
     if not s:
         return JSONResponse({"error": "Источник не найден"}, status_code=404)
@@ -580,7 +682,8 @@ def delete_source(sid: int):
 
 
 @app.get("/api/projects/{pid}/documents")
-def list_documents(pid: int):
+def list_documents(pid: int, user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Project not found"}, status_code=404)
@@ -593,7 +696,9 @@ def upload_document(
     pid: int,
     file: UploadFile = File(...),
     parse: str | None = Query(None),
+    user=Depends(current_user_dependency),
 ):
+    require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Project not found"}, status_code=404)
@@ -615,7 +720,8 @@ def upload_document(
 
 
 @app.get("/api/documents/{did}")
-def get_document(did: int, raw: str | None = Query(None)):
+def get_document(did: int, raw: str | None = Query(None), user=Depends(current_user_dependency)):
+    _require_document_access(user, did)
     document = db.session.get(SourceDocument, did)
     if not document:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -623,7 +729,8 @@ def get_document(did: int, raw: str | None = Query(None)):
 
 
 @app.post("/api/documents/{did}/parse")
-def parse_document(did: int):
+def parse_document(did: int, user=Depends(current_user_dependency)):
+    _require_document_access(user, did)
     document = db.session.get(SourceDocument, did)
     if not document:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -640,7 +747,9 @@ def list_document_chunks(
     did: int,
     limit: int | None = Query(None),
     offset: int | None = Query(None),
+    user=Depends(current_user_dependency),
 ):
+    _require_document_access(user, did)
     document = db.session.get(SourceDocument, did)
     if not document:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -659,7 +768,9 @@ def list_document_tables(
     did: int,
     limit: int | None = Query(None),
     offset: int | None = Query(None),
+    user=Depends(current_user_dependency),
 ):
+    _require_document_access(user, did)
     document = db.session.get(SourceDocument, did)
     if not document:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -674,7 +785,8 @@ def list_document_tables(
 
 
 @app.get("/api/documents/{did}/preview")
-def preview_document(did: int):
+def preview_document(did: int, user=Depends(current_user_dependency)):
+    _require_document_access(user, did)
     document = db.session.get(SourceDocument, did)
     if not document:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -682,7 +794,8 @@ def preview_document(did: int):
 
 
 @app.delete("/api/documents/{did}")
-def delete_document_endpoint(did: int):
+def delete_document_endpoint(did: int, user=Depends(current_user_dependency)):
+    _require_document_access(user, did)
     document = db.session.get(SourceDocument, did)
     if not document:
         return JSONResponse({"error": "Document not found"}, status_code=404)
@@ -692,7 +805,8 @@ def delete_document_endpoint(did: int):
 
 # ── Generation ──────────────────────────────────────────────────────────
 @app.post("/api/projects/{pid}/generate", status_code=201)
-def generate(pid: int, d: dict = Body(default={})):
+def generate(pid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -738,7 +852,9 @@ def list_hypotheses(
     pid: int,
     weights: str | None = Query(None),
     status: str | None = Query(None),
+    user=Depends(current_user_dependency),
 ):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -757,7 +873,9 @@ def export_hypotheses(
     pid: int,
     format: str = Query("md", alias="format"),
     weights: str | None = Query(None),
+    user=Depends(current_user_dependency),
 ):
+    p, membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -765,7 +883,7 @@ def export_hypotheses(
     parsed_weights = _parse_weights(weights) or DEFAULT_WEIGHTS
     hyps = [h.to_dict(parsed_weights) for h in p.hypotheses.all()]
     hyps.sort(key=lambda x: x["composite"], reverse=True)
-    project = p.to_dict()
+    project = p.to_dict(membership.role)
 
     def _file(content, media_type, ext):
         return Response(
@@ -797,7 +915,8 @@ def export_hypotheses(
 
 
 @app.patch("/api/hypotheses/{hid}")
-def update_hypothesis(hid: int, d: dict = Body(default={})):
+def update_hypothesis(hid: int, d: dict = Body(default={}), user=Depends(current_user_dependency)):
+    _require_hypothesis_access(user, hid)
     h = db.session.get(Hypothesis, hid)
     if not h:
         return JSONResponse({"error": "Гипотеза не найдена"}, status_code=404)
@@ -823,7 +942,8 @@ def update_hypothesis(hid: int, d: dict = Body(default={})):
 
 
 @app.delete("/api/hypotheses/{hid}")
-def delete_hypothesis(hid: int):
+def delete_hypothesis(hid: int, user=Depends(current_user_dependency)):
+    _require_hypothesis_access(user, hid)
     h = db.session.get(Hypothesis, hid)
     if not h:
         return JSONResponse({"error": "Гипотеза не найдена"}, status_code=404)
@@ -834,7 +954,8 @@ def delete_hypothesis(hid: int):
 
 # ── Runs (аудит/прозрачность) ───────────────────────────────────────────
 @app.get("/api/projects/{pid}/runs")
-def list_runs(pid: int):
+def list_runs(pid: int, user=Depends(current_user_dependency)):
+    p, _membership = require_project_access(user, pid)
     p = db.session.get(Project, pid)
     if not p:
         return JSONResponse({"error": "Проект не найден"}, status_code=404)
@@ -843,7 +964,8 @@ def list_runs(pid: int):
 
 
 @app.get("/api/runs/{rid}")
-def get_run(rid: int):
+def get_run(rid: int, user=Depends(current_user_dependency)):
+    _require_run_access(user, rid)
     r = db.session.get(GenerationRun, rid)
     if not r:
         return JSONResponse({"error": "Запуск не найден"}, status_code=404)

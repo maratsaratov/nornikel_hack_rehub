@@ -330,9 +330,7 @@ export default function GenerationPanel({
         feasibility: weights.feasibility / 100,
         risk: weights.risk / 100,
       }
-      const url = `/api/projects/${project.id}/hypotheses/export?format=${format}`
-        + `&weights=${encodeURIComponent(JSON.stringify(apiWeights))}`
-      const res = await fetch(url)
+      const res = await api.exportHypotheses(project.id, format, apiWeights)
       if (!res.ok) {
         let msg = `Ошибка ${res.status}`
         try { const e = await res.json(); msg = e.error || msg } catch (_) { /* ignore */ }

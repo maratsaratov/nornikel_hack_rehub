@@ -51,6 +51,93 @@ function Icon({ name }) {
   )
 }
 
+function AuthScreen({ onSubmit }) {
+  const [mode, setMode] = useState('login')
+  const [form, setForm] = useState({ username: '', display_name: '', password: '' })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const isRegister = mode === 'register'
+
+  const update = (key) => (event) => {
+    setForm((prev) => ({ ...prev, [key]: event.target.value }))
+    setError('')
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    if (!form.username.trim() || !form.password) return
+    setBusy(true)
+    setError('')
+    try {
+      await onSubmit(mode, form)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="auth-screen">
+      <form className="auth-card" onSubmit={submit}>
+        <span className="auth-card__eyebrow">Re Hub accounts</span>
+        <h1>{isRegister ? 'Создать аккаунт' : 'Войти в аккаунт'}</h1>
+        <p>Проекты видны только владельцу и приглашенным участникам.</p>
+
+        <label>
+          <span>Логин/ник</span>
+          <input
+            value={form.username}
+            onChange={update('username')}
+            autoComplete="username"
+            placeholder="user_1"
+          />
+        </label>
+
+        {isRegister && (
+          <label>
+            <span>Отображаемое имя</span>
+            <input
+              value={form.display_name}
+              onChange={update('display_name')}
+              autoComplete="name"
+              placeholder="Иван"
+            />
+          </label>
+        )}
+
+        <label>
+          <span>Пароль</span>
+          <input
+            type="password"
+            value={form.password}
+            onChange={update('password')}
+            autoComplete={isRegister ? 'new-password' : 'current-password'}
+            placeholder="Минимум 6 символов"
+          />
+        </label>
+
+        {error && <div className="auth-card__error">{error}</div>}
+
+        <button className="btn primary" type="submit" disabled={busy}>
+          {busy ? 'Подождите...' : isRegister ? 'Зарегистрироваться' : 'Войти'}
+        </button>
+
+        <button
+          className="auth-card__switch"
+          type="button"
+          onClick={() => {
+            setMode(isRegister ? 'login' : 'register')
+            setError('')
+          }}
+        >
+          {isRegister ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Создать'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export default function App() {
   const [config, setConfig] = useState(null)
   const [llmOk, setLlmOk] = useState(null)
@@ -60,7 +147,8 @@ export default function App() {
   const [documents, setDocuments] = useState([])
   const [projectModal, setProjectModal] = useState(null)
   const [toast, setToast] = useState(null)
-  
+  const [authChecked, setAuthChecked] = useState(false)
+  const [currentUser, setCurrentUser] = useState(null)
   const [currentRoute, setCurrentRoute] = useState(window.location.hash || '#knowledge')
 
   const flash = (msg, type = 'ok') => {
@@ -71,10 +159,27 @@ export default function App() {
   useEffect(() => {
     api.config().then(setConfig).catch(() => {})
     api.healthLlm().then((r) => setLlmOk(r.ok)).catch(() => setLlmOk(false))
-    api.listProjects().then((ps) => {
-      setProjects(ps)
-      if (ps.length) setCurrentId(ps[0].id)
-    }).catch((e) => flash(e.message, 'err'))
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    if (!api.getToken()) {
+      setAuthChecked(true)
+      return () => { active = false }
+    }
+
+    api.me()
+      .then((user) => {
+        if (active) setCurrentUser(user)
+      })
+      .catch(() => {
+        api.setToken('')
+      })
+      .finally(() => {
+        if (active) setAuthChecked(true)
+      })
+
+    return () => { active = false }
   }, [])
 
   useEffect(() => {
@@ -87,6 +192,22 @@ export default function App() {
     () => projects.find((p) => p.id === currentId) || null,
     [projects, currentId],
   )
+  const canManageProject = Boolean(project?.can_manage_project || project?.current_user_role === 'owner')
+  const canManageMembers = Boolean(project?.can_manage_members || project?.current_user_role === 'owner')
+
+  async function loadProjects() {
+    const list = await api.listProjects()
+    setProjects(list)
+    setCurrentId((prev) => {
+      if (list.some((item) => item.id === prev)) return prev
+      return list[0]?.id || null
+    })
+  }
+
+  useEffect(() => {
+    if (!authChecked || !currentUser) return
+    loadProjects().catch((e) => flash(e.message, 'err'))
+  }, [authChecked, currentUser])
 
   async function reloadKnowledge(projectId = currentId) {
     if (!projectId) {
@@ -107,26 +228,68 @@ export default function App() {
     reloadKnowledge().catch((e) => flash(e.message, 'err'))
   }, [currentId])
 
-  async function saveProject(form) {
-    if (form.id) {
-      const p = await api.updateProject(form.id, form)
-      setProjects((prev) => prev.map((x) => (x.id === p.id ? p : x)))
-      flash('Проект обновлён')
-      return
+  async function handleAuth(mode, form) {
+    const payload = {
+      username: form.username.trim(),
+      password: form.password,
+    }
+    if (mode === 'register') {
+      payload.display_name = form.display_name.trim()
     }
 
-    const p = await api.createProject(form)
-    setProjects((prev) => [p, ...prev])
-    setCurrentId(p.id)
+    const result = mode === 'register'
+      ? await api.register(payload)
+      : await api.login(payload)
+    api.setToken(result.token)
+    setCurrentUser(result.user)
+    flash(mode === 'register' ? 'Аккаунт создан' : 'Вход выполнен')
+  }
+
+  async function logout() {
+    try {
+      await api.logout()
+    } catch (_) {
+      // Local logout should still succeed if the session is already invalid.
+    } finally {
+      api.setToken('')
+      setCurrentUser(null)
+      setProjects([])
+      setCurrentId(null)
+      setSources([])
+      setDocuments([])
+      setProjectModal(null)
+    }
+  }
+
+  async function saveProject(form) {
+    if (form.id) {
+      if (!canManageProject) {
+        flash('Свойства проекта может менять только owner', 'err')
+        return null
+      }
+      const saved = await api.updateProject(form.id, form)
+      setProjects((prev) => prev.map((item) => (item.id === saved.id ? saved : item)))
+      flash('Проект обновлен')
+      return saved
+    }
+
+    const created = await api.createProject(form)
+    setProjects((prev) => [created, ...prev])
+    setCurrentId(created.id)
     flash('Проект создан')
+    return created
   }
 
   async function saveTarget(payload) {
     if (!project) return null
-    const p = await api.updateProject(project.id, { ...project, ...payload })
-    setProjects((prev) => prev.map((x) => (x.id === p.id ? p : x)))
-    flash('Целевой показатель сохранён')
-    return p
+    if (!canManageProject) {
+      flash('Целевые свойства проекта может менять только owner', 'err')
+      return null
+    }
+    const saved = await api.updateProject(project.id, { ...project, ...payload })
+    setProjects((prev) => prev.map((item) => (item.id === saved.id ? saved : item)))
+    flash('Целевой показатель сохранен')
+    return saved
   }
 
   async function addSource(data) {
@@ -138,8 +301,8 @@ export default function App() {
   async function deleteSource(id) {
     try {
       await api.deleteSource(id)
-      setSources((prev) => prev.filter((s) => s.id !== id))
-      flash('Источник удалён')
+      setSources((prev) => prev.filter((source) => source.id !== id))
+      flash('Источник удален')
       return true
     } catch (error) {
       flash(error.message, 'err')
@@ -167,11 +330,51 @@ export default function App() {
   async function deleteDocument(id) {
     await api.deleteDocument(id)
     setDocuments((prev) => prev.filter((doc) => doc.id !== id))
-    flash('Файл удалён')
+    flash('Файл удален')
+  }
+
+  async function loadProjectMembers(projectId) {
+    return api.listProjectMembers(projectId)
+  }
+
+  async function inviteProjectMember(projectId, username) {
+    const member = await api.addProjectMember(projectId, { username })
+    flash('Участник добавлен')
+    await loadProjects()
+    return member
+  }
+
+  async function removeProjectMember(projectId, userId) {
+    await api.deleteProjectMember(projectId, userId)
+    flash('Участник удален')
+    await loadProjects()
   }
 
   const systemState = llmOk === null ? 'Проверка модулей' : llmOk ? 'Система активна' : 'Модель недоступна'
   const systemHint = llmOk === false ? (config?.model || 'Проверьте настройки LLM') : 'Все модули работают в штатном режиме'
+
+  if (!authChecked) {
+    return (
+      <div className="knowledge-app">
+        <div className="auth-screen">
+          <div className="auth-card">
+            <span className="auth-card__eyebrow">ReHub accounts</span>
+            <h1>Проверяем сессию</h1>
+            <p>Секунду, поднимаем рабочее пространство.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!currentUser) {
+    return (
+      <>
+        <AuthScreen onSubmit={handleAuth} />
+        <Toast toast={toast} />
+      </>
+    )
+  }
 
   return (
     <div className="knowledge-app">
@@ -210,9 +413,9 @@ export default function App() {
             </button>
             <span>Проект</span>
             {projects.length > 0 ? (
-              <select value={currentId || ''} onChange={(e) => setCurrentId(Number(e.target.value))} aria-label="Выбор проекта">
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
+              <select value={currentId || ''} onChange={(event) => setCurrentId(Number(event.target.value))} aria-label="Выбор проекта">
+                {projects.map((item) => (
+                  <option key={item.id} value={item.id}>{item.title}</option>
                 ))}
               </select>
             ) : (
@@ -221,9 +424,24 @@ export default function App() {
             <span className="project-switcher__arrow">›</span>
           </div>
 
-          <button className="avatar-button" type="button" onClick={() => project && setProjectModal(project)} aria-label="Параметры проекта">
-            <span>{project?.title?.trim()?.[0] || 'Л'}</span>
-          </button>
+          <div className="account-actions">
+            <span className="account-actions__user">
+              {currentUser.display_name || currentUser.username}
+            </span>
+            <button className="account-actions__logout" type="button" onClick={logout}>
+              Выйти
+            </button>
+            <button
+              className="avatar-button"
+              type="button"
+              disabled={!project || !canManageProject}
+              onClick={() => project && canManageProject && setProjectModal(project)}
+              aria-label="Параметры проекта"
+              title={canManageProject ? 'Параметры проекта' : 'Настройки доступны только owner'}
+            >
+              <span>{project?.title?.trim()?.[0] || currentUser.username?.[0] || 'U'}</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -246,7 +464,7 @@ export default function App() {
               />
             )}
             {currentRoute === '#generation' && (
-              <GenerationPanel 
+              <GenerationPanel
                 project={project}
                 flash={flash}
                 onDeleteSource={deleteSource}
@@ -256,13 +474,13 @@ export default function App() {
               />
             )}
             {currentRoute === '#target' && (
-              <TargetPanel project={project} onSave={saveTarget} />
+              <TargetPanel project={project} onSave={saveTarget} canEdit={canManageProject} />
             )}
           </>
         ) : (
           <section className="empty-project">
             <h1>База знаний</h1>
-            <p>Создайте проект, чтобы загрузить статьи, отчёты и DOI-ссылки.</p>
+            <p>Создайте проект, чтобы загружать статьи, отчеты и DOI-ссылки.</p>
             <button className="button button--primary" type="button" onClick={() => setProjectModal('new')}>Создать проект</button>
           </section>
         )}
@@ -313,8 +531,13 @@ export default function App() {
       {projectModal && (
         <ProjectModal
           initial={projectModal === 'new' ? null : projectModal}
+          currentUser={currentUser}
+          canManageMembers={projectModal !== 'new' && canManageMembers}
           onClose={() => setProjectModal(null)}
           onSave={saveProject}
+          onLoadMembers={loadProjectMembers}
+          onInviteMember={inviteProjectMember}
+          onRemoveMember={removeProjectMember}
         />
       )}
 

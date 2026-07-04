@@ -107,7 +107,7 @@ function formatSavedDate(value) {
   }).format(date)
 }
 
-export default function TargetPanel({ project, onSave }) {
+export default function TargetPanel({ project, onSave, canEdit = true }) {
   const initialTags = useMemo(() => splitTokens(project?.domain, DEFAULT_TAGS), [project])
   const initialConstraints = useMemo(() => splitTokens(project?.constraints, DEFAULT_CONSTRAINTS), [project])
 
@@ -178,7 +178,7 @@ export default function TargetPanel({ project, onSave }) {
   }
 
   const save = async () => {
-    if (!goal.trim()) return
+    if (!canEdit || !goal.trim()) return
     setSaving(true)
 
     try {
@@ -317,7 +317,7 @@ export default function TargetPanel({ project, onSave }) {
           </section>
 
           <div className="target-save-row">
-            <button className="target-save" type="button" onClick={save} disabled={saving || !goal.trim()}>
+            <button className="target-save" type="button" onClick={save} disabled={saving || !goal.trim() || !canEdit}>
               <Icon name="save" />
               {saving ? 'Сохранение...' : 'Сохранить изменения'}
             </button>

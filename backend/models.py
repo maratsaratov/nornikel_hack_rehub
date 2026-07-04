@@ -8,6 +8,9 @@
                      +----> Hypothesis (гипотеза + покомпонентные оценки + evidence)
 """
 from datetime import datetime
+
+from sqlalchemy import UniqueConstraint
+
 from db import db
 
 
@@ -19,6 +22,34 @@ DEFAULT_WEIGHTS = {
     "feasibility": 0.25,  # реализуемость / проверяемость
     "risk": 0.20,         # риск (входит инвертированно: 100 - risk)
 }
+
+ROLE_OWNER = "owner"
+ROLE_MEMBER = "member"
+
+
+class User(db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), nullable=False, unique=True, index=True)
+    display_name = db.Column(db.String(160))
+    password_hash = db.Column(db.String(300), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    memberships = db.relationship("ProjectMembership", back_populates="user",
+                                  cascade="all, delete-orphan", lazy="dynamic")
+    created_projects = db.relationship("Project", back_populates="created_by",
+                                       foreign_keys="Project.created_by_id", lazy="dynamic")
+    sessions = db.relationship("AuthSession", back_populates="user",
+                               cascade="all, delete-orphan", lazy="dynamic")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "display_name": self.display_name or self.username,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 def composite_score(scores: dict, weights: dict = None) -> float:
@@ -41,6 +72,7 @@ def composite_score(scores: dict, weights: dict = None) -> float:
 class Project(db.Model):
     __tablename__ = "projects"
     id = db.Column(db.Integer, primary_key=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
     title = db.Column(db.String(300), nullable=False)
     kpi_target = db.Column(db.Text, nullable=False)          # текст цели
     kpi_metric = db.Column(db.String(200))                   # измеримая метрика
@@ -57,10 +89,15 @@ class Project(db.Model):
                            cascade="all, delete-orphan", lazy="dynamic")
     documents = db.relationship("SourceDocument", backref="project",
                                 cascade="all, delete-orphan", lazy="dynamic")
+    memberships = db.relationship("ProjectMembership", back_populates="project",
+                                  cascade="all, delete-orphan", lazy="dynamic")
+    created_by = db.relationship("User", back_populates="created_projects",
+                                 foreign_keys=[created_by_id])
 
-    def to_dict(self):
+    def to_dict(self, current_user_role=None):
         return {
             "id": self.id,
+            "created_by_id": self.created_by_id,
             "title": self.title,
             "kpi_target": self.kpi_target,
             "kpi_metric": self.kpi_metric,
@@ -70,7 +107,48 @@ class Project(db.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "source_count": self.sources.count(),
             "hypothesis_count": self.hypotheses.count(),
+            "member_count": self.memberships.count(),
+            "current_user_role": current_user_role,
+            "can_manage_project": current_user_role == ROLE_OWNER,
+            "can_manage_members": current_user_role == ROLE_OWNER,
         }
+
+
+class ProjectMembership(db.Model):
+    __tablename__ = "project_memberships"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_project_membership"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("projects.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    role = db.Column(db.String(20), nullable=False, default=ROLE_MEMBER)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    project = db.relationship("Project", back_populates="memberships")
+    user = db.relationship("User", back_populates="memberships")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "user_id": self.user_id,
+            "role": self.role,
+            "user": self.user.to_dict() if self.user else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AuthSession(db.Model):
+    __tablename__ = "auth_sessions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = db.Column(db.String(128), nullable=False, unique=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship("User", back_populates="sessions")
 
 
 class KnowledgeSource(db.Model):
