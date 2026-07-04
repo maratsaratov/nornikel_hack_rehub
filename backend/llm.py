@@ -94,6 +94,55 @@ def complete_json(system: str, user: str, max_tokens: int = None,
     return data, usage
 
 
+IMAGE_SYSTEM = (
+    "Ты превращаешь изображение в текстовое описание для научной базы знаний НИОКР "
+    "(материаловедение, металлургия, катализ, электрохимия, аккумуляторы). Отвечай ПО-РУССКИ, "
+    "связным текстом, без выдумок — только то, что видно на изображении."
+)
+IMAGE_USER = (
+    "Извлеки из изображения всю полезную для НИОКР информацию: перепиши весь текст, подписи, "
+    "числа с единицами измерения; опиши графики, таблицы, схемы, микроструктуры и их смысл. "
+    "Если это фотография образца/установки — опиши, что на ней. Не добавляй фактов, которых нет на картинке."
+)
+
+
+def describe_image(data_uri: str, system: str = None, user: str = None,
+                   max_tokens: int = None):
+    """Описать изображение vision-моделью (Config.IMAGE_MODEL). Возвращает (text, usage)."""
+    resp = client().chat.completions.create(
+        model=Config.IMAGE_MODEL,
+        messages=[
+            {"role": "system", "content": system or IMAGE_SYSTEM},
+            {"role": "user", "content": [
+                {"type": "text", "text": user or IMAGE_USER},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ]},
+        ],
+        max_tokens=max_tokens or Config.IMAGE_MAX_TOKENS,
+        temperature=0.2,
+        extra_headers={
+            "HTTP-Referer": "https://hypothesis-factory.local",
+            "X-Title": "Hypothesis Factory",
+        },
+    )
+    msg = resp.choices[0].message
+    text = (msg.content or "").strip()
+    if not text and hasattr(msg, "reasoning"):
+        text = (getattr(msg, "reasoning", "") or "").strip()
+
+    usage = {}
+    if resp.usage:
+        usage = {
+            "prompt_tokens": resp.usage.prompt_tokens,
+            "completion_tokens": resp.usage.completion_tokens,
+            "total_tokens": resp.usage.total_tokens,
+        }
+        cost = getattr(resp.usage, "cost", None)
+        if cost is not None:
+            usage["cost_usd"] = cost
+    return text, usage
+
+
 def ping() -> dict:
     """Быстрая проверка доступности модели (для /api/health)."""
     try:
